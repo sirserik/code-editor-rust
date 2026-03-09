@@ -1,0 +1,39 @@
+#!/bin/bash
+# Code Editor - macOS App Launcher
+# Opens the TUI editor inside a dark Terminal window
+
+APP_DIR="$(dirname "$0")"
+EDITOR_BIN="$APP_DIR/code-editor-rust"
+
+# Get the file/folder to open
+TARGET="${1:-}"
+
+if [ -z "$TARGET" ] || [ "$TARGET" = "/" ]; then
+    TARGET="$HOME"
+fi
+
+osascript <<SCRIPT
+tell application "Terminal"
+    -- Use Pro (dark) profile, fallback to default
+    set darkProfile to "Pro"
+    try
+        set profileNames to name of every settings set
+        if darkProfile is not in profileNames then
+            set darkProfile to first item of profileNames
+        end if
+    end try
+
+    activate
+    do script "clear && '${EDITOR_BIN}' '${TARGET}'; exit"
+
+    -- Apply dark profile to the new window
+    try
+        set current settings of front window to settings set darkProfile
+    end try
+
+    -- Set window title
+    try
+        set custom title of front window to "Code Editor"
+    end try
+end tell
+SCRIPT
