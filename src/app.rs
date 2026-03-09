@@ -22,6 +22,7 @@ pub enum Focus {
     DeleteConfirm,
     CommitInput,
     SaveAsDialog,
+    Autocomplete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,6 +92,20 @@ pub struct App {
     // Save-as dialog
     pub save_as_input: String,
 
+    // Autocomplete
+    pub autocomplete_suggestions: Vec<String>,
+    pub autocomplete_selected: usize,
+    pub show_autocomplete: bool,
+
+    // Auto-save
+    pub auto_save_enabled: bool,
+
+    // Minimap
+    pub show_minimap: bool,
+
+    // Breadcrumbs
+    pub show_breadcrumbs: bool,
+
     // Deferred action (for file dialogs from keyboard shortcuts)
     pub pending_action: Option<PaletteAction>,
 
@@ -128,6 +143,9 @@ pub enum PaletteAction {
     ToggleWordWrap,
     ToggleLineNumbers,
     ToggleHiddenFiles,
+    ToggleMinimap,
+    ToggleBreadcrumbs,
+    ToggleAutoSave,
     QuickOpen,
     Quit,
 }
@@ -176,6 +194,12 @@ impl App {
             dialog_input: String::new(),
             dialog_context_path: String::new(),
             save_as_input: String::new(),
+            autocomplete_suggestions: Vec::new(),
+            autocomplete_selected: 0,
+            show_autocomplete: false,
+            auto_save_enabled: true,
+            show_minimap: true,
+            show_breadcrumbs: true,
             pending_action: None,
             folder_picker_rx: None,
             search_rx: None,
@@ -199,6 +223,9 @@ impl App {
             PaletteItem { name: "Toggle Word Wrap".into(), shortcut: "".into(), action: PaletteAction::ToggleWordWrap },
             PaletteItem { name: "Toggle Line Numbers".into(), shortcut: "".into(), action: PaletteAction::ToggleLineNumbers },
             PaletteItem { name: "Toggle Hidden Files (.env, .git...)".into(), shortcut: "".into(), action: PaletteAction::ToggleHiddenFiles },
+            PaletteItem { name: "Toggle Minimap".into(), shortcut: "".into(), action: PaletteAction::ToggleMinimap },
+            PaletteItem { name: "Toggle Breadcrumbs".into(), shortcut: "".into(), action: PaletteAction::ToggleBreadcrumbs },
+            PaletteItem { name: "Toggle Auto-Save".into(), shortcut: "".into(), action: PaletteAction::ToggleAutoSave },
             PaletteItem { name: "Quit".into(), shortcut: "Ctrl+Q".into(), action: PaletteAction::Quit },
         ]
     }
@@ -387,6 +414,18 @@ impl App {
                 let state = if self.file_tree.show_hidden { "shown" } else { "hidden" };
                 self.status_message = format!("Hidden files: {}", state);
             }
+            PaletteAction::ToggleMinimap => {
+                self.show_minimap = !self.show_minimap;
+                self.status_message = format!("Minimap: {}", if self.show_minimap { "on" } else { "off" });
+            }
+            PaletteAction::ToggleBreadcrumbs => {
+                self.show_breadcrumbs = !self.show_breadcrumbs;
+                self.status_message = format!("Breadcrumbs: {}", if self.show_breadcrumbs { "on" } else { "off" });
+            }
+            PaletteAction::ToggleAutoSave => {
+                self.auto_save_enabled = !self.auto_save_enabled;
+                self.status_message = format!("Auto-save: {}", if self.auto_save_enabled { "on" } else { "off" });
+            }
             PaletteAction::QuickOpen => {
                 self.focus = Focus::QuickOpen;
                 self.quick_open_input.clear();
@@ -568,7 +607,63 @@ impl App {
         self.update_find_matches();
     }
 
-    pub fn tick(&mut self) {}
+    /// Auto-save: save dirty files after 2 seconds of inactivity
+    pub fn auto_save_tick(&mut self) {
+        if !self.auto_save_enabled { return; }
+        for editor in &mut self.editors {
+            if editor.is_dirty && editor.file_path.is_some() {
+                if let Some(last_edit) = editor.last_edit_time {
+                    if last_edit.elapsed().as_secs() >= 2 {
+                        let _ = editor.save();
+                        editor.last_edit_time = None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Trigger autocomplete
+    pub fn trigger_autocomplete(&mut self) {
+        let prefix = self.active_editor().word_at_cursor();
+        if prefix.len() < 2 {
+            self.show_autocomplete = false;
+            self.autocomplete_suggestions.clear();
+            return;
+        }
+        let suggestions = self.active_editor().collect_words(&prefix);
+        if suggestions.is_empty() {
+            self.show_autocomplete = false;
+            self.autocomplete_suggestions.clear();
+        } else {
+            self.autocomplete_suggestions = suggestions;
+            self.autocomplete_selected = 0;
+            self.show_autocomplete = true;
+        }
+    }
+
+    /// Accept current autocomplete suggestion
+    pub fn accept_autocomplete(&mut self) {
+        if !self.show_autocomplete || self.autocomplete_suggestions.is_empty() {
+            return;
+        }
+        let suggestion = self.autocomplete_suggestions[self.autocomplete_selected].clone();
+        let prefix = self.active_editor().word_at_cursor();
+        let suffix = &suggestion[prefix.len()..];
+        let ed = self.active_editor_mut();
+        for c in suffix.chars() {
+            ed.buffer.insert_char(ed.cursor.line, ed.cursor.col, c);
+            ed.cursor.col += 1;
+        }
+        ed.is_dirty = true;
+        ed.diagnostics_dirty = true;
+        ed.last_edit_time = Some(std::time::Instant::now());
+        self.show_autocomplete = false;
+        self.autocomplete_suggestions.clear();
+    }
+
+    pub fn tick(&mut self) {
+        self.auto_save_tick();
+    }
 }
 
 // Remaining code after GUI migration removed

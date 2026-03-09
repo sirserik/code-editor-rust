@@ -9,6 +9,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::syntax::SyntaxError;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LineDiffStatus {
+    Added,
+    Modified,
+}
+
 #[derive(Debug)]
 pub struct Editor {
     pub buffer: Buffer,
@@ -28,6 +34,14 @@ pub struct Editor {
     // Syntax diagnostics
     pub diagnostics: Vec<SyntaxError>,
     pub diagnostics_dirty: bool,
+    // Git diff per line
+    pub line_diff: HashMap<usize, LineDiffStatus>,
+    // Original content (for git diff computation)
+    pub original_content: Option<String>,
+    // Last edit timestamp for auto-save
+    pub last_edit_time: Option<std::time::Instant>,
+    // Multi-cursor: extra cursors beyond the main one
+    pub extra_cursors: Vec<Cursor>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +69,10 @@ impl Editor {
             folded: HashSet::new(),
             diagnostics: Vec::new(),
             diagnostics_dirty: true,
+            line_diff: HashMap::new(),
+            original_content: None,
+            last_edit_time: None,
+            extra_cursors: Vec::new(),
         }
     }
 
@@ -70,12 +88,16 @@ impl Editor {
             viewport_height: 24,
             viewport_width: 80,
             selection: None,
-            undo_stack: vec![(initial_content, 0, 0)],
+            undo_stack: vec![(initial_content.clone(), 0, 0)],
             undo_counter: 0,
             fold_ranges: HashMap::new(),
             folded: HashSet::new(),
             diagnostics: Vec::new(),
             diagnostics_dirty: true,
+            line_diff: HashMap::new(),
+            original_content: Some(initial_content),
+            last_edit_time: None,
+            extra_cursors: Vec::new(),
         })
     }
 
@@ -106,6 +128,7 @@ impl Editor {
         self.buffer.insert_char(line, col, c);
         self.cursor.col += 1;
         self.is_dirty = true; self.diagnostics_dirty = true;
+        self.last_edit_time = Some(std::time::Instant::now());
     }
 
     pub fn insert_newline(&mut self) {
@@ -129,6 +152,7 @@ impl Editor {
         }
 
         self.is_dirty = true; self.diagnostics_dirty = true;
+        self.last_edit_time = Some(std::time::Instant::now());
     }
 
     pub fn insert_tab(&mut self) {
@@ -489,6 +513,124 @@ impl Editor {
 
     pub fn line_count(&self) -> usize {
         self.buffer.line_count()
+    }
+
+    /// Collect all words from the buffer for autocomplete
+    pub fn collect_words(&self, prefix: &str) -> Vec<String> {
+        let mut words = HashSet::new();
+        let text = self.buffer.text();
+        for word in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
+            if word.len() >= 2 && word != prefix && word.starts_with(prefix) {
+                words.insert(word.to_string());
+            }
+        }
+        let mut result: Vec<String> = words.into_iter().collect();
+        result.sort();
+        result.truncate(12);
+        result
+    }
+
+    /// Get the word prefix at cursor position (for autocomplete)
+    pub fn word_at_cursor(&self) -> String {
+        let line = self.buffer.get_line(self.cursor.line);
+        let chars: Vec<char> = line.chars().collect();
+        let mut start = self.cursor.col;
+        while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+            start -= 1;
+        }
+        chars[start..self.cursor.col].iter().collect()
+    }
+
+    /// Compute line-by-line diff against original content
+    pub fn compute_line_diff(&mut self) {
+        self.line_diff.clear();
+        let original = match &self.original_content {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let orig_lines: Vec<&str> = original.lines().collect();
+        let lc = self.buffer.line_count();
+        for li in 0..lc {
+            let current = self.buffer.get_line(li);
+            if li >= orig_lines.len() {
+                self.line_diff.insert(li, LineDiffStatus::Added);
+            } else if current != orig_lines[li] {
+                self.line_diff.insert(li, LineDiffStatus::Modified);
+            }
+        }
+    }
+
+    /// Find next occurrence of word under cursor (for ⌘D)
+    pub fn select_next_occurrence(&mut self) {
+        let word = self.word_at_cursor();
+        if word.is_empty() {
+            // Select the word at cursor first
+            let line = self.buffer.get_line(self.cursor.line);
+            let chars: Vec<char> = line.chars().collect();
+            let mut start = self.cursor.col;
+            while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+                start -= 1;
+            }
+            let mut end = self.cursor.col;
+            while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+                end += 1;
+            }
+            if start < end {
+                self.selection = Some(Selection {
+                    start_line: self.cursor.line,
+                    start_col: start,
+                    end_line: self.cursor.line,
+                    end_col: end,
+                });
+            }
+            return;
+        }
+        // Search for next occurrence after current position
+        let lc = self.buffer.line_count();
+        let search_word = if let Some(ref sel) = self.selection {
+            self.buffer.get_range(sel.start_line, sel.start_col, sel.end_line, sel.end_col)
+        } else {
+            word
+        };
+        if search_word.is_empty() { return; }
+
+        // Search from cursor position
+        for li in self.cursor.line..lc {
+            let line = self.buffer.get_line(li);
+            let start_col = if li == self.cursor.line { self.cursor.col + 1 } else { 0 };
+            if let Some(pos) = line[start_col..].find(&search_word) {
+                let col = start_col + pos;
+                // Add current cursor as extra cursor
+                self.extra_cursors.push(Cursor { line: self.cursor.line, col: self.cursor.col });
+                self.cursor.line = li;
+                self.cursor.col = col;
+                self.selection = Some(Selection {
+                    start_line: li,
+                    start_col: col,
+                    end_line: li,
+                    end_col: col + search_word.len(),
+                });
+                self.scroll_into_view();
+                return;
+            }
+        }
+        // Wrap around from top
+        for li in 0..self.cursor.line {
+            let line = self.buffer.get_line(li);
+            if let Some(pos) = line.find(&search_word) {
+                self.extra_cursors.push(Cursor { line: self.cursor.line, col: self.cursor.col });
+                self.cursor.line = li;
+                self.cursor.col = pos;
+                self.selection = Some(Selection {
+                    start_line: li,
+                    start_col: pos,
+                    end_line: li,
+                    end_col: pos + search_word.len(),
+                });
+                self.scroll_into_view();
+                return;
+            }
+        }
     }
 
     /// Compute fold ranges by matching { } brackets across lines

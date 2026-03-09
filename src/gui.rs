@@ -175,6 +175,15 @@ impl eframe::App for CodeEditorApp {
         self.render_editor(ctx);
         self.render_drag_overlay(ctx);
         self.render_overlays(ctx);
+        // Auto-save tick
+        self.app.tick();
+        // Compute git diff for active editor periodically
+        {
+            let ed = &mut self.app.editors[self.app.active_editor];
+            if ed.is_dirty && ed.original_content.is_some() {
+                ed.compute_line_diff();
+            }
+        }
         // Execute deferred actions (file dialogs need to run after rendering)
         if let Some(action) = self.app.pending_action.take() {
             self.app.execute_palette_action(action);
@@ -340,6 +349,21 @@ impl CodeEditorApp {
                             self.app.settings.save();
                             ui.close_menu();
                         }
+                        let minimap_label = if self.app.show_minimap { "Hide Minimap" } else { "Show Minimap" };
+                        if ui.button(minimap_label).clicked() {
+                            self.app.show_minimap = !self.app.show_minimap;
+                            ui.close_menu();
+                        }
+                        let bc_label = if self.app.show_breadcrumbs { "Hide Breadcrumbs" } else { "Show Breadcrumbs" };
+                        if ui.button(bc_label).clicked() {
+                            self.app.show_breadcrumbs = !self.app.show_breadcrumbs;
+                            ui.close_menu();
+                        }
+                        let as_label = if self.app.auto_save_enabled { "Disable Auto-Save" } else { "Enable Auto-Save" };
+                        if ui.button(as_label).clicked() {
+                            self.app.auto_save_enabled = !self.app.auto_save_enabled;
+                            ui.close_menu();
+                        }
                         ui.separator();
                         if ui.button("Zoom In            ⌘+").clicked() {
                             self.app.settings.font_size = (self.app.settings.font_size + 1.0).min(32.0);
@@ -467,6 +491,9 @@ impl CodeEditorApp {
                         let err_count = ed.diagnostics.len();
                         if err_count > 0 {
                             ui.label(RichText::new(format!("⚠ {}", err_count)).font(small()).color(Color32::from_rgb(247, 118, 142)));
+                        }
+                        if self.app.auto_save_enabled {
+                            ui.label(RichText::new("Auto-Save").font(FontId::monospace(10.0)).color(tc.green));
                         }
                         let font_size = self.app.settings.font_size;
                         ui.label(RichText::new(format!("{}px", font_size as u32)).font(small()).color(tc.fg_dim));
@@ -1158,6 +1185,42 @@ impl CodeEditorApp {
                 return;
             }
 
+            // Breadcrumbs bar
+            if self.app.show_breadcrumbs {
+                let ed = &self.app.editors[self.app.active_editor];
+                if let Some(ref fp) = ed.file_path {
+                    let root = self.app.file_tree.root_path.as_deref().unwrap_or("");
+                    let rel = fp.strip_prefix(root).unwrap_or(fp).trim_start_matches('/');
+                    let parts: Vec<&str> = rel.split('/').collect();
+                    let dark = self.app.settings.theme != Theme::Light;
+                    let bc_bg = if dark { Color32::from_rgb(37, 37, 37) } else { Color32::from_rgb(245, 245, 245) };
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, Rounding::ZERO, bc_bg);
+                    let mut x = rect.min.x + 12.0;
+                    for (i, part) in parts.iter().enumerate() {
+                        if i > 0 {
+                            let sep_r = ui.painter().text(
+                                Pos2::new(x, rect.min.y + 4.0), egui::Align2::LEFT_TOP,
+                                " › ", FontId::monospace(11.0), self.tc.fg_dim,
+                            );
+                            x += sep_r.width();
+                        }
+                        let is_last = i == parts.len() - 1;
+                        let color = if is_last { self.tc.fg } else { self.tc.fg_dim };
+                        let tr = ui.painter().text(
+                            Pos2::new(x, rect.min.y + 4.0), egui::Align2::LEFT_TOP,
+                            *part, FontId::monospace(11.0), color,
+                        );
+                        x += tr.width();
+                    }
+                    // Bottom border
+                    ui.painter().line_segment(
+                        [Pos2::new(rect.min.x, rect.max.y), Pos2::new(rect.max.x, rect.max.y)],
+                        Stroke::new(1.0, self.tc.border),
+                    );
+                }
+            }
+
             let dark = self.app.settings.theme != Theme::Light;
             let fs = self.app.settings.font_size;
             let font = mono_sized(fs);
@@ -1197,6 +1260,31 @@ impl CodeEditorApp {
             let bracket_match = find_matching_bracket(&self.app, ed.cursor.line, ed.cursor.col);
             // bracket_depths computed after vis_lines below
 
+            // Autocomplete key handling (before regular input)
+            if self.app.show_autocomplete && self.app.focus == Focus::Editor {
+                let ac_up = ctx.input(|i| i.key_pressed(egui::Key::ArrowUp));
+                let ac_down = ctx.input(|i| i.key_pressed(egui::Key::ArrowDown));
+                let ac_accept = ctx.input(|i| i.key_pressed(egui::Key::Tab))
+                    || ctx.input(|i| i.key_pressed(egui::Key::Enter));
+                let ac_dismiss = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+                if ac_up && self.app.autocomplete_selected > 0 {
+                    self.app.autocomplete_selected -= 1;
+                }
+                if ac_down && self.app.autocomplete_selected + 1 < self.app.autocomplete_suggestions.len() {
+                    self.app.autocomplete_selected += 1;
+                }
+                if ac_accept {
+                    self.app.accept_autocomplete();
+                }
+                if ac_dismiss || ac_accept {
+                    self.app.show_autocomplete = false;
+                }
+                // Skip normal key processing when autocomplete consumed the key
+                if ac_up || ac_down || ac_accept || ac_dismiss {
+                    // still need to continue to paint, just skip input
+                }
+            }
+
             // Input handling
             if self.app.focus == Focus::Editor {
                 for event in &ctx.input(|i| i.events.clone()) {
@@ -1216,26 +1304,36 @@ impl CodeEditorApp {
                                 }
                             }
                             ed.scroll_into_view();
+                            // Trigger autocomplete
+                            self.app.trigger_autocomplete();
                         }
                         egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                            // Skip if autocomplete already handled this key
+                            if self.app.show_autocomplete && matches!(key,
+                                egui::Key::ArrowUp | egui::Key::ArrowDown |
+                                egui::Key::Tab | egui::Key::Enter | egui::Key::Escape
+                            ) {
+                                continue;
+                            }
                             let ed = &mut self.app.editors[self.app.active_editor];
                             match key {
                                 egui::Key::ArrowUp if modifiers.alt => ed.move_line_up(),
                                 egui::Key::ArrowDown if modifiers.alt => ed.move_line_down(),
-                                egui::Key::ArrowUp => ed.move_up(),
-                                egui::Key::ArrowDown => ed.move_down(),
+                                egui::Key::ArrowUp => { ed.move_up(); self.app.show_autocomplete = false; },
+                                egui::Key::ArrowDown => { ed.move_down(); self.app.show_autocomplete = false; },
                                 egui::Key::ArrowLeft if modifiers.alt => ed.move_word_left(),
                                 egui::Key::ArrowRight if modifiers.alt => ed.move_word_right(),
-                                egui::Key::ArrowLeft => ed.move_left(),
-                                egui::Key::ArrowRight => ed.move_right(),
+                                egui::Key::ArrowLeft => { ed.move_left(); self.app.show_autocomplete = false; },
+                                egui::Key::ArrowRight => { ed.move_right(); self.app.show_autocomplete = false; },
                                 egui::Key::Home => ed.move_home(),
                                 egui::Key::End => ed.move_end(),
-                                egui::Key::Backspace => ed.delete_back(),
+                                egui::Key::Backspace => { ed.delete_back(); self.app.show_autocomplete = false; },
                                 egui::Key::Delete => ed.delete_forward(),
                                 egui::Key::Enter => ed.insert_newline(),
                                 egui::Key::Tab if modifiers.shift => ed.outdent(),
                                 egui::Key::Tab => ed.insert_tab(),
-                                egui::Key::D if modifiers.command => ed.duplicate_line(),
+                                egui::Key::D if modifiers.command && modifiers.shift => ed.duplicate_line(),
+                                egui::Key::D if modifiers.command => ed.select_next_occurrence(),
                                 egui::Key::K if modifiers.command => ed.delete_line(),
                                 egui::Key::Slash if modifiers.command => ed.toggle_comment(),
                                 egui::Key::PageUp => ed.page_up(),
@@ -1254,31 +1352,37 @@ impl CodeEditorApp {
             let avail = ui.available_size();
             let (rect, response) = ui.allocate_exact_size(avail, egui::Sense::click_and_drag());
 
-            // Click handling
+            // Click handling (skip if click is in minimap area)
+            let minimap_w_check = if self.app.show_minimap { 80.0 } else { 0.0 };
             if response.clicked() {
                 self.app.focus = Focus::Editor;
                 if let Some(pos) = response.interact_pointer_pos() {
-                    let rel = pos - rect.min;
-                    let row_idx = (rel.y / lh) as usize;
-                    let ed = &mut self.app.editors[self.app.active_editor];
-                    let vis_lines = ed.visible_lines(ed.scroll_offset, ed.viewport_height + 2);
-                    let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
+                    // Skip click if it's on the minimap
+                    if !(self.app.show_minimap && pos.x > rect.max.x - minimap_w_check) {
+                        let rel = pos - rect.min;
+                        let row_idx = (rel.y / lh) as usize;
+                        let ed = &mut self.app.editors[self.app.active_editor];
+                        let vis_lines = ed.visible_lines(ed.scroll_offset, ed.viewport_height + 2);
+                        let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
 
-                    // Check if click is in the fold gutter area
-                    if rel.x < gw - fold_w + fold_w {
-                        // Check if this line has a fold range
-                        if ed.fold_ranges.contains_key(&actual_line) {
-                            ed.toggle_fold(actual_line);
+                        // Check if click is in the fold gutter area
+                        if rel.x < gw - fold_w + fold_w {
+                            // Check if this line has a fold range
+                            if ed.fold_ranges.contains_key(&actual_line) {
+                                ed.toggle_fold(actual_line);
+                            } else {
+                                ed.cursor.line = actual_line;
+                                ed.cursor.col = 0;
+                            }
                         } else {
+                            let cc = ((rel.x - gw).max(0.0) / cw) as usize;
                             ed.cursor.line = actual_line;
-                            ed.cursor.col = 0;
+                            ed.cursor.col = cc.min(ed.buffer.line_len(actual_line));
                         }
-                    } else {
-                        let cc = ((rel.x - gw).max(0.0) / cw) as usize;
-                        ed.cursor.line = actual_line;
-                        ed.cursor.col = cc.min(ed.buffer.line_len(actual_line));
+                        ed.selection = None;
+                        // Clear extra cursors on single click
+                        ed.extra_cursors.clear();
                     }
-                    ed.selection = None;
                 }
             }
 
@@ -1326,6 +1430,18 @@ impl CodeEditorApp {
                     painter.rect_filled(
                         Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(rect.width(), lh)),
                         Rounding::ZERO, self.tc.current_line_bg,
+                    );
+                }
+
+                // Git diff gutter indicator
+                if let Some(diff_status) = ed.line_diff.get(&li) {
+                    let diff_color = match diff_status {
+                        crate::editor::LineDiffStatus::Added => self.tc.green,
+                        crate::editor::LineDiffStatus::Modified => Color32::from_rgb(70, 140, 220),
+                    };
+                    painter.rect_filled(
+                        Rect::from_min_size(Pos2::new(rect.min.x + 1.0, y), Vec2::new(3.0, lh)),
+                        Rounding::ZERO, diff_color,
                     );
                 }
 
@@ -1507,6 +1623,9 @@ impl CodeEditorApp {
                 }
             }
 
+            // Deferred minimap scroll (set by minimap click, applied after ed borrow ends)
+            let mut minimap_new_scroll: Option<usize> = None;
+
             // Cursor (blinking)
             let cursor_row = vis_lines.iter().position(|&l| l == ed.cursor.line);
             if self.app.focus == Focus::Editor {
@@ -1522,14 +1641,203 @@ impl CodeEditorApp {
                 }
             }}  // close if let Some(row) and if focus
 
-            // Minimap-style scrollbar indicator (right edge)
-            if lc > vis {
+            // Minimap (code overview on right side)
+            if self.app.show_minimap && lc > 1 {
+                let minimap_w = 80.0;
+                let minimap_x = rect.max.x - minimap_w;
+                let minimap_rect = Rect::from_min_size(Pos2::new(minimap_x, rect.min.y), Vec2::new(minimap_w, rect.height()));
+                let minimap_bg = if dark {
+                    Color32::from_rgb(30, 30, 30)
+                } else {
+                    Color32::from_rgb(240, 240, 240)
+                };
+                painter.rect_filled(minimap_rect, Rounding::ZERO, minimap_bg);
+                // Left border
+                painter.line_segment(
+                    [Pos2::new(minimap_x, rect.min.y), Pos2::new(minimap_x, rect.max.y)],
+                    Stroke::new(1.0, self.tc.border),
+                );
+
+                // Calculate minimap scaling
+                let mini_line_h: f32 = 2.0;
+                let total_mini_h = mini_line_h * lc as f32;
+                // If all lines fit in the rect, no scrolling needed for minimap
+                // If they don't fit, we scroll the minimap proportionally
+                let minimap_scroll_offset: f32 = if total_mini_h > rect.height() {
+                    let scroll_ratio = so as f32 / (lc as f32 - vis as f32).max(1.0);
+                    scroll_ratio * (total_mini_h - rect.height())
+                } else {
+                    0.0
+                };
+
+                // Draw minimap lines
+                let step = if lc > 3000 { (lc / 1500).max(1) } else { 1 };
+                for li in (0..lc).step_by(step) {
+                    let my = rect.min.y + li as f32 * mini_line_h - minimap_scroll_offset;
+                    if my < rect.min.y - 2.0 { continue; }
+                    if my > rect.max.y { break; }
+
+                    let line = ed.buffer.get_line(li);
+                    let indent = line.chars().take_while(|c| c.is_whitespace()).count();
+                    let content_len = line.trim().len().min(60);
+                    if content_len == 0 { continue; }
+
+                    let mx = minimap_x + 4.0 + (indent as f32 * 0.6).min(20.0);
+                    let mw = (content_len as f32 * 0.8).min(minimap_w - 8.0);
+
+                    // Color based on syntax — keywords brighter
+                    let line_color = if let Some(diff_st) = ed.line_diff.get(&li) {
+                        match diff_st {
+                            crate::editor::LineDiffStatus::Added => if dark {
+                                Color32::from_rgba_premultiplied(106, 171, 115, 100)
+                            } else {
+                                Color32::from_rgba_premultiplied(10, 132, 57, 60)
+                            },
+                            crate::editor::LineDiffStatus::Modified => if dark {
+                                Color32::from_rgba_premultiplied(70, 140, 220, 100)
+                            } else {
+                                Color32::from_rgba_premultiplied(55, 125, 207, 60)
+                            },
+                        }
+                    } else if dark {
+                        Color32::from_rgba_premultiplied(187, 187, 187, 50)
+                    } else {
+                        Color32::from_rgba_premultiplied(0, 0, 0, 35)
+                    };
+
+                    painter.rect_filled(
+                        Rect::from_min_size(Pos2::new(mx, my), Vec2::new(mw, mini_line_h.max(1.0))),
+                        Rounding::ZERO, line_color,
+                    );
+                }
+
+                // Viewport indicator (highlighted area showing what's visible)
+                let vp_y = rect.min.y + so as f32 * mini_line_h - minimap_scroll_offset;
+                let vp_h = (vis as f32 * mini_line_h).max(10.0);
+                let vp_color = if dark {
+                    Color32::from_rgba_premultiplied(122, 162, 247, 30)
+                } else {
+                    Color32::from_rgba_premultiplied(55, 125, 207, 25)
+                };
+                painter.rect_filled(
+                    Rect::from_min_size(Pos2::new(minimap_x, vp_y), Vec2::new(minimap_w, vp_h)),
+                    Rounding::ZERO, vp_color,
+                );
+                // Border on viewport indicator
+                let vp_border = if dark {
+                    Color32::from_rgba_premultiplied(122, 162, 247, 70)
+                } else {
+                    Color32::from_rgba_premultiplied(55, 125, 207, 50)
+                };
+                painter.line_segment(
+                    [Pos2::new(minimap_x, vp_y), Pos2::new(minimap_x + minimap_w, vp_y)],
+                    Stroke::new(1.0, vp_border),
+                );
+                painter.line_segment(
+                    [Pos2::new(minimap_x, vp_y + vp_h), Pos2::new(minimap_x + minimap_w, vp_y + vp_h)],
+                    Stroke::new(1.0, vp_border),
+                );
+
+                // Handle minimap click & drag to scroll
+                if let Some(pointer_pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                    if minimap_rect.contains(pointer_pos) {
+                        let clicking = ctx.input(|i| i.pointer.primary_down());
+                        if clicking {
+                            let click_y = pointer_pos.y - rect.min.y + minimap_scroll_offset;
+                            let target_line = (click_y / mini_line_h) as usize;
+                            let target_scroll = target_line.saturating_sub(vis / 2).min(lc.saturating_sub(vis));
+                            minimap_new_scroll = Some(target_scroll);
+                        }
+
+                        // Hover highlight
+                        if !clicking {
+                            let hover_y = pointer_pos.y - rect.min.y + minimap_scroll_offset;
+                            let hover_line = (hover_y / mini_line_h) as usize;
+                            let hover_vp_y = rect.min.y + hover_line.saturating_sub(vis / 2) as f32 * mini_line_h - minimap_scroll_offset;
+                            let hover_vp_h = vis as f32 * mini_line_h;
+                            painter.rect_filled(
+                                Rect::from_min_size(Pos2::new(minimap_x, hover_vp_y), Vec2::new(minimap_w, hover_vp_h)),
+                                Rounding::ZERO,
+                                if dark {
+                                    Color32::from_rgba_premultiplied(255, 255, 255, 10)
+                                } else {
+                                    Color32::from_rgba_premultiplied(0, 0, 0, 8)
+                                },
+                            );
+                        }
+                    }
+                }
+            } else if lc > vis {
+                // Simple scrollbar when minimap is off
                 let sb_h = (vis as f32 / lc as f32 * rect.height()).max(20.0);
                 let sb_y = rect.min.y + (so as f32 / lc as f32 * rect.height());
                 painter.rect_filled(
                     Rect::from_min_size(Pos2::new(rect.max.x - 6.0, sb_y), Vec2::new(4.0, sb_h)),
                     Rounding::same(2), if dark { Color32::from_rgba_premultiplied(122, 162, 247, 60) } else { Color32::from_rgba_premultiplied(0, 0, 0, 40) },
                 );
+            }
+
+            // Autocomplete popup
+            if self.app.show_autocomplete && self.app.focus == Focus::Editor {
+                if let Some(cursor_row) = cursor_row {
+                    let ac_x = rect.min.x + gw + ed.cursor.col as f32 * cw;
+                    let ac_y = rect.min.y + (cursor_row + 1) as f32 * lh;
+                    let ac_w = 220.0;
+                    let ac_item_h = 24.0;
+                    let ac_count = self.app.autocomplete_suggestions.len().min(8);
+                    let ac_h = ac_count as f32 * ac_item_h + 4.0;
+
+                    let popup_bg = if dark { Color32::from_rgb(43, 43, 43) } else { Color32::from_rgb(255, 255, 255) };
+                    let ac_rect = Rect::from_min_size(Pos2::new(ac_x, ac_y), Vec2::new(ac_w, ac_h));
+
+                    // Shadow
+                    painter.rect_filled(
+                        ac_rect.translate(Vec2::new(2.0, 2.0)),
+                        Rounding::same(4), Color32::from_black_alpha(if dark { 80 } else { 30 }),
+                    );
+                    painter.rect_filled(ac_rect, Rounding::same(4), popup_bg);
+                    painter.rect_stroke(ac_rect, Rounding::same(4), Stroke::new(1.0, self.tc.border), egui::StrokeKind::Outside);
+
+                    for (i, suggestion) in self.app.autocomplete_suggestions.iter().enumerate().take(ac_count) {
+                        let item_y = ac_y + 2.0 + i as f32 * ac_item_h;
+                        let selected = i == self.app.autocomplete_selected;
+                        if selected {
+                            painter.rect_filled(
+                                Rect::from_min_size(Pos2::new(ac_x + 2.0, item_y), Vec2::new(ac_w - 4.0, ac_item_h)),
+                                Rounding::same(3), self.tc.selection_bg,
+                            );
+                        }
+                        painter.text(
+                            Pos2::new(ac_x + 8.0, item_y + 4.0), egui::Align2::LEFT_TOP,
+                            suggestion, FontId::monospace(12.0),
+                            if selected { self.tc.fg } else { self.tc.fg_dim },
+                        );
+                    }
+                }
+            }
+
+            // Extra cursors (multi-cursor)
+            if self.app.focus == Focus::Editor {
+                let blink = (ui.input(|i| i.time) * 2.0) as u32 % 2 == 0;
+                if blink {
+                    for ec in &ed.extra_cursors {
+                        if let Some(row) = vis_lines.iter().position(|&l| l == ec.line) {
+                            let ecy = rect.min.y + row as f32 * lh;
+                            let ecx = rect.min.x + gw + ec.col as f32 * cw;
+                            if ecy < rect.max.y {
+                                painter.rect_filled(
+                                    Rect::from_min_size(Pos2::new(ecx, ecy), Vec2::new(2.0, lh)),
+                                    Rounding::ZERO, self.tc.cursor_color,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Apply deferred minimap scroll (after `ed` borrow ends)
+            if let Some(new_scroll) = minimap_new_scroll {
+                self.app.editors[self.app.active_editor].scroll_offset = new_scroll;
             }
         });
     }
