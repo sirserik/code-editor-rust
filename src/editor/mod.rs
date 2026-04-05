@@ -43,6 +43,10 @@ pub struct Editor {
     pub last_edit_time: Option<std::time::Instant>,
     // Multi-cursor: extra cursors beyond the main one
     pub extra_cursors: Vec<Cursor>,
+    // Cached syntax highlights per line (Scintilla-style)
+    pub highlight_cache: Vec<Vec<crate::syntax::HighlightSpan>>,
+    pub highlight_cache_lang: String,
+    pub highlight_dirty_from: Option<usize>, // re-highlight from this line
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +79,9 @@ impl Editor {
             original_content: None,
             last_edit_time: None,
             extra_cursors: Vec::new(),
+            highlight_cache: Vec::new(),
+            highlight_cache_lang: String::new(),
+            highlight_dirty_from: Some(0),
         }
     }
 
@@ -101,7 +108,18 @@ impl Editor {
             original_content: Some(initial_content),
             last_edit_time: None,
             extra_cursors: Vec::new(),
+            highlight_cache: Vec::new(),
+            highlight_cache_lang: String::new(),
+            highlight_dirty_from: Some(0),
         })
+    }
+
+    /// Mark highlights dirty from a specific line (for incremental re-lex)
+    pub fn invalidate_highlights_from(&mut self, line: usize) {
+        match self.highlight_dirty_from {
+            Some(existing) => self.highlight_dirty_from = Some(existing.min(line)),
+            None => self.highlight_dirty_from = Some(line),
+        }
     }
 
     pub fn file_name(&self) -> String {

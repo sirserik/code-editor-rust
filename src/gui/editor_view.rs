@@ -124,6 +124,9 @@ impl CodeEditorApp {
                 let ed = &mut self.app.editors[self.app.active_editor];
                 if ed.fold_ranges.is_empty() || ed.is_dirty {
                     ed.compute_fold_ranges();
+                    // Mark syntax highlighting dirty from cursor line
+                    let cur_line = ed.cursor.line;
+                    ed.invalidate_highlights_from(cur_line.saturating_sub(1));
                 }
             }
 
@@ -138,9 +141,36 @@ impl CodeEditorApp {
                 }
             }
 
+            // Update syntax highlight cache (Scintilla-style incremental)
+            {
+                let ed = &mut self.app.editors[self.app.active_editor];
+                let lang = ed.file_path.as_ref().map(|p| syntax::detect_language(p).to_string()).unwrap_or("text".into());
+                let lc = ed.line_count();
+                let need_full = ed.highlight_cache_lang != lang || ed.highlight_cache.is_empty();
+                if need_full {
+                    ed.highlight_cache.clear();
+                    ed.highlight_cache.resize(lc, Vec::new());
+                    for li in 0..lc {
+                        let line = ed.buffer.get_line(li);
+                        ed.highlight_cache[li] = syntax::highlight_line(&line, &lang);
+                    }
+                    ed.highlight_cache_lang = lang;
+                    ed.highlight_dirty_from = None;
+                } else if let Some(dirty_from) = ed.highlight_dirty_from.take() {
+                    // Resize cache if lines changed
+                    ed.highlight_cache.resize(lc, Vec::new());
+                    // Re-highlight from dirty line to end of visible area + margin
+                    let dirty_to = (dirty_from + ed.viewport_height + 50).min(lc);
+                    for li in dirty_from..dirty_to {
+                        let line = ed.buffer.get_line(li);
+                        ed.highlight_cache[li] = syntax::highlight_line(&line, &ed.highlight_cache_lang.clone());
+                    }
+                }
+            }
+
             let ed = &self.app.editors[self.app.active_editor];
             let lc = ed.line_count();
-            let lang = ed.file_path.as_ref().map(|p| syntax::detect_language(p).to_string()).unwrap_or("text".into());
+            let lang = ed.highlight_cache_lang.clone();
             let gutter_digits = format!("{}", lc).len().max(3);
             let fold_w = cw * 1.8;
             let gw = if show_ln { cw * (gutter_digits as f32 + 1.5) + fold_w } else { fold_w };
@@ -485,7 +515,7 @@ impl CodeEditorApp {
                 }
 
                 let line = ed.buffer.get_line(li);
-                let hls = syntax::highlight_line(&line, &lang);
+                let hls = if li < ed.highlight_cache.len() { &ed.highlight_cache[li] } else { &[] as &[syntax::HighlightSpan] };
                 let chars: Vec<char> = line.chars().collect();
                 let xs = rect.min.x + gw;
 
@@ -668,58 +698,49 @@ impl CodeEditorApp {
         font: &FontId,
         dark: bool,
     ) {
+        if chars.is_empty() { return; }
         let cw = painter.fonts(|f| f.glyph_width(font, ' '));
 
-        if hls.is_empty() {
-            let mut cx = xs;
-            for (ci, &ch) in chars.iter().enumerate() {
-                let color = if "()[]{}".contains(ch) {
-                    if let Some(&depth) = bracket_depths.get(&(li, ci)) {
-                        self.tc.bracket_colors[depth % self.tc.bracket_colors.len()]
-                    } else { self.tc.fg }
-                } else { self.tc.fg };
-                painter.text(Pos2::new(cx, y), egui::Align2::LEFT_TOP, String::from(ch), font.clone(), color);
-                cx += cw;
+        // Build per-char color map
+        let len = chars.len();
+        let mut colors = vec![self.tc.fg; len];
+
+        // Apply syntax highlight colors
+        for hl in hls {
+            let start = hl.start.min(len);
+            let end = hl.end.min(len);
+            let c = hl.kind.color(dark);
+            for ci in start..end {
+                colors[ci] = c;
             }
-        } else {
-            let mut pos = 0;
-            for hl in hls {
-                if pos < hl.start && pos < chars.len() {
-                    for ci in pos..hl.start.min(chars.len()) {
-                        let ch = chars[ci];
-                        let color = if "()[]{}".contains(ch) {
-                            if let Some(&depth) = bracket_depths.get(&(li, ci)) {
-                                self.tc.bracket_colors[depth % self.tc.bracket_colors.len()]
-                            } else { self.tc.fg }
-                        } else { self.tc.fg };
-                        painter.text(Pos2::new(xs + ci as f32 * cw, y), egui::Align2::LEFT_TOP, String::from(ch), font.clone(), color);
-                    }
-                }
-                if hl.start < chars.len() {
-                    let end = hl.end.min(chars.len());
-                    for ci in hl.start..end {
-                        let ch = chars[ci];
-                        let color = if "()[]{}".contains(ch) {
-                            if let Some(&depth) = bracket_depths.get(&(li, ci)) {
-                                self.tc.bracket_colors[depth % self.tc.bracket_colors.len()]
-                            } else { hl.kind.color(dark) }
-                        } else { hl.kind.color(dark) };
-                        painter.text(Pos2::new(xs + ci as f32 * cw, y), egui::Align2::LEFT_TOP, String::from(ch), font.clone(), color);
-                    }
-                }
-                pos = hl.end;
-            }
-            if pos < chars.len() {
-                for ci in pos..chars.len() {
-                    let ch = chars[ci];
-                    let color = if "()[]{}".contains(ch) {
-                        if let Some(&depth) = bracket_depths.get(&(li, ci)) {
-                            self.tc.bracket_colors[depth % self.tc.bracket_colors.len()]
-                        } else { self.tc.fg }
-                    } else { self.tc.fg };
-                    painter.text(Pos2::new(xs + ci as f32 * cw, y), egui::Align2::LEFT_TOP, String::from(ch), font.clone(), color);
+        }
+
+        // Override bracket colors (rainbow)
+        for (ci, &ch) in chars.iter().enumerate() {
+            if "()[]{}".contains(ch) {
+                if let Some(&depth) = bracket_depths.get(&(li, ci)) {
+                    colors[ci] = self.tc.bracket_colors[depth % self.tc.bracket_colors.len()];
                 }
             }
+        }
+
+        // Render in batched spans of same color — much faster than per-char
+        let mut span_start = 0;
+        while span_start < len {
+            let color = colors[span_start];
+            let mut span_end = span_start + 1;
+            while span_end < len && colors[span_end] == color {
+                span_end += 1;
+            }
+            let text: String = chars[span_start..span_end].iter().collect();
+            painter.text(
+                Pos2::new(xs + span_start as f32 * cw, y),
+                egui::Align2::LEFT_TOP,
+                text,
+                font.clone(),
+                color,
+            );
+            span_start = span_end;
         }
     }
 
@@ -914,15 +935,18 @@ impl CodeEditorApp {
             0.0
         };
 
-        let step = if lc > 3000 { (lc / 1500).max(1) } else { 1 };
+        let step = if lc > 2000 { (lc / 1000).max(1) } else { 1 };
         for li in (0..lc).step_by(step) {
             let my = rect.min.y + li as f32 * mini_line_h - minimap_scroll_offset;
             if my < rect.min.y - 2.0 { continue; }
             if my > rect.max.y { break; }
 
-            let line = ed.buffer.get_line(li);
-            let indent = line.chars().take_while(|c| c.is_whitespace()).count();
-            let content_len = line.trim().len().min(60);
+            // Use rope line length directly to avoid String allocation
+            let line_char_len = ed.buffer.line_len(li);
+            if line_char_len == 0 { continue; }
+            let rope_line = ed.buffer.rope.line(li);
+            let indent = rope_line.chars().take_while(|c| c.is_whitespace()).count();
+            let content_len = line_char_len.saturating_sub(indent).min(60);
             if content_len == 0 { continue; }
 
             let mx = minimap_x + 4.0 + (indent as f32 * 0.6).min(20.0);
