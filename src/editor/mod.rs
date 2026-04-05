@@ -25,8 +25,9 @@ pub struct Editor {
     pub viewport_height: usize,
     pub viewport_width: usize,
     pub selection: Option<Selection>,
-    // Simple undo: store snapshots
+    // Undo/Redo: store snapshots
     undo_stack: Vec<(String, usize, usize)>, // (content, cursor_line, cursor_col)
+    redo_stack: Vec<(String, usize, usize)>,
     undo_counter: usize, // track changes for periodic snapshots
     // Code folding: maps fold start line -> fold end line
     pub fold_ranges: HashMap<usize, usize>,
@@ -64,6 +65,7 @@ impl Editor {
             viewport_width: 80,
             selection: None,
             undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             undo_counter: 0,
             fold_ranges: HashMap::new(),
             folded: HashSet::new(),
@@ -89,6 +91,7 @@ impl Editor {
             viewport_width: 80,
             selection: None,
             undo_stack: vec![(initial_content.clone(), 0, 0)],
+            redo_stack: Vec::new(),
             undo_counter: 0,
             fold_ranges: HashMap::new(),
             folded: HashSet::new(),
@@ -372,6 +375,84 @@ impl Editor {
         });
     }
 
+    /// Normalize selection so start <= end
+    pub fn normalized_selection(&self) -> Option<Selection> {
+        self.selection.as_ref().map(|sel| {
+            if (sel.start_line, sel.start_col) <= (sel.end_line, sel.end_col) {
+                sel.clone()
+            } else {
+                Selection {
+                    start_line: sel.end_line, start_col: sel.end_col,
+                    end_line: sel.start_line, end_col: sel.start_col,
+                }
+            }
+        })
+    }
+
+    /// Start or extend selection from current cursor position
+    pub fn ensure_selection_anchor(&mut self) {
+        if self.selection.is_none() {
+            self.selection = Some(Selection {
+                start_line: self.cursor.line,
+                start_col: self.cursor.col,
+                end_line: self.cursor.line,
+                end_col: self.cursor.col,
+            });
+        }
+    }
+
+    /// Update the selection end to current cursor position
+    pub fn update_selection_end(&mut self) {
+        if let Some(ref mut sel) = self.selection {
+            sel.end_line = self.cursor.line;
+            sel.end_col = self.cursor.col;
+        }
+    }
+
+    /// Delete selection and return deleted text, or None if no selection
+    pub fn delete_selection_text(&mut self) -> Option<String> {
+        let sel = self.normalized_selection()?;
+        let text = self.buffer.get_range(sel.start_line, sel.start_col, sel.end_line, sel.end_col);
+        self.buffer.delete_range(sel.start_line, sel.start_col, sel.end_line, sel.end_col);
+        self.cursor.line = sel.start_line;
+        self.cursor.col = sel.start_col;
+        self.selection = None;
+        self.is_dirty = true;
+        self.diagnostics_dirty = true;
+        Some(text)
+    }
+
+    /// Select word at cursor position
+    pub fn select_word_at_cursor(&mut self) {
+        let line = self.buffer.get_line(self.cursor.line);
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() { return; }
+        let mut start = self.cursor.col.min(chars.len().saturating_sub(1));
+        let mut end = start;
+        while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+            start -= 1;
+        }
+        while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+            end += 1;
+        }
+        if start < end {
+            self.selection = Some(Selection {
+                start_line: self.cursor.line, start_col: start,
+                end_line: self.cursor.line, end_col: end,
+            });
+            self.cursor.col = end;
+        }
+    }
+
+    /// Select entire current line
+    pub fn select_line(&mut self) {
+        let line_len = self.buffer.line_len(self.cursor.line);
+        self.selection = Some(Selection {
+            start_line: self.cursor.line, start_col: 0,
+            end_line: self.cursor.line, end_col: line_len,
+        });
+    }
+
     pub fn get_selected_text(&self) -> Option<String> {
         let sel = self.selection.as_ref()?;
         Some(self.buffer.get_range(sel.start_line, sel.start_col, sel.end_line, sel.end_col))
@@ -458,23 +539,25 @@ impl Editor {
         let cursor_line = self.cursor.line;
         let cursor_col = self.cursor.col;
         self.undo_stack.push((content, cursor_line, cursor_col));
-        // Limit stack size — use swap_remove-like drain for efficiency
+        // Clear redo stack on new edit
+        self.redo_stack.clear();
+        // Limit stack size
         if self.undo_stack.len() > 200 {
             self.undo_stack.drain(..50);
         }
     }
 
     pub fn undo(&mut self) {
-        // Save current state first if it differs
         let current = self.buffer.text();
+        // Save current state to redo stack
         if let Some(last) = self.undo_stack.last() {
             if last.0 != current {
-                self.undo_stack.push((current, self.cursor.line, self.cursor.col));
+                self.undo_stack.push((current.clone(), self.cursor.line, self.cursor.col));
             }
         }
-        // Pop current, restore previous
         if self.undo_stack.len() > 1 {
-            self.undo_stack.pop(); // remove current
+            let popped = self.undo_stack.pop().unwrap();
+            self.redo_stack.push(popped);
             if let Some((content, line, col)) = self.undo_stack.last().cloned() {
                 self.buffer.rope = ropey::Rope::from_str(&content);
                 self.cursor.line = line.min(self.buffer.line_count().saturating_sub(1));
@@ -482,6 +565,20 @@ impl Editor {
                 self.clamp_cursor();
                 self.is_dirty = true; self.diagnostics_dirty = true;
             }
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some((content, line, col)) = self.redo_stack.pop() {
+            // Save current to undo stack
+            let current = self.buffer.text();
+            self.undo_stack.push((current, self.cursor.line, self.cursor.col));
+            // Restore redo state
+            self.buffer.rope = ropey::Rope::from_str(&content);
+            self.cursor.line = line.min(self.buffer.line_count().saturating_sub(1));
+            self.cursor.col = col;
+            self.clamp_cursor();
+            self.is_dirty = true; self.diagnostics_dirty = true;
         }
     }
 

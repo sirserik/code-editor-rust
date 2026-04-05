@@ -14,6 +14,7 @@ pub struct CodeEditorApp {
     drag_source: Option<(usize, String)>,
     drop_target: Option<(usize, String)>,
     tc: ThemeColors,
+    clipboard: Option<arboard::Clipboard>,
 }
 
 pub(crate) const DEFAULT_FONT_SIZE: f32 = 14.0;
@@ -59,7 +60,8 @@ pub(crate) fn file_icon_color(name: &str, dark: bool) -> Color32 {
 impl CodeEditorApp {
     pub fn new(app: App) -> Self {
         let tc = app.settings.theme.colors();
-        Self { app, drag_source: None, drop_target: None, tc }
+        let clipboard = arboard::Clipboard::new().ok();
+        Self { app, drag_source: None, drop_target: None, tc, clipboard }
     }
 }
 
@@ -78,6 +80,19 @@ impl eframe::App for CodeEditorApp {
             visuals.window_fill = self.tc.bg;
             visuals.faint_bg_color = self.tc.sidebar_bg;
             ctx.set_visuals(visuals);
+        }
+        // Update window title with current file name
+        {
+            let ed = &self.app.editors[self.app.active_editor];
+            let name = ed.file_name();
+            let dirty = if ed.is_dirty { " ●" } else { "" };
+            let project = self.app.file_tree.root_path.as_ref()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .map(|n| format!(" — {}", n.to_string_lossy()))
+                .unwrap_or_default();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+                format!("{}{}{} — Code Editor", name, dirty, project)
+            ));
         }
         self.handle_keys(ctx);
         self.render_menu_bar(ctx);

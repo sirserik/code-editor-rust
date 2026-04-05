@@ -262,6 +262,36 @@ impl CodeEditorApp {
                     });
                 });
             }
+            Focus::SaveAsDialog => {
+                let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+                egui::Area::new(egui::Id::new("saveas")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.2, 80.0)).show(ctx, |ui| {
+                    popup_frame(self.tc.accent).show(ui, |ui| {
+                        ui.set_width(400.0);
+                        ui.label(RichText::new("Save As").font(mono()).color(self.tc.accent));
+                        ui.add_space(6.0);
+                        let r = ui.add(egui::TextEdit::singleline(&mut self.app.save_as_input)
+                            .font(mono()).hint_text("/path/to/file.rs").desired_width(380.0).text_color(self.tc.fg));
+                        r.request_focus();
+                        if enter_pressed && !self.app.save_as_input.is_empty() {
+                            let path = self.app.save_as_input.clone();
+                            // Create parent dirs if needed
+                            if let Some(parent) = std::path::Path::new(&path).parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            let ed = self.app.active_editor_mut();
+                            ed.file_path = Some(path.clone());
+                            match ed.save() {
+                                Ok(_) => {
+                                    let name = ed.file_name();
+                                    self.app.status_message = format!("Saved: {}", name);
+                                }
+                                Err(e) => self.app.status_message = format!("Save error: {}", e),
+                            }
+                            self.app.focus = Focus::Editor;
+                        }
+                    });
+                });
+            }
             Focus::CommitInput => {
                 let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
                 egui::Area::new(egui::Id::new("commit")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.25, 80.0)).show(ctx, |ui| {

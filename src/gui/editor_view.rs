@@ -178,8 +178,10 @@ impl CodeEditorApp {
                     match event {
                         egui::Event::Text(text) => {
                             let ed = &mut self.app.editors[self.app.active_editor];
+                            ed.save_undo_snapshot();
+                            // Typing replaces selection
+                            ed.delete_selection_text();
                             for c in text.chars() {
-                                ed.selection = None;
                                 ed.insert_char(c);
                                 if let Some(cc) = match c {
                                     '(' => Some(')'), '[' => Some(']'), '{' => Some('}'),
@@ -200,21 +202,83 @@ impl CodeEditorApp {
                             ) {
                                 continue;
                             }
+                            let shift = modifiers.shift;
                             let ed = &mut self.app.editors[self.app.active_editor];
                             match key {
+                                // Movement with Shift = extend selection
                                 egui::Key::ArrowUp if modifiers.alt => ed.move_line_up(),
                                 egui::Key::ArrowDown if modifiers.alt => ed.move_line_down(),
-                                egui::Key::ArrowUp => { ed.move_up(); self.app.show_autocomplete = false; },
-                                egui::Key::ArrowDown => { ed.move_down(); self.app.show_autocomplete = false; },
-                                egui::Key::ArrowLeft if modifiers.alt => ed.move_word_left(),
-                                egui::Key::ArrowRight if modifiers.alt => ed.move_word_right(),
-                                egui::Key::ArrowLeft => { ed.move_left(); self.app.show_autocomplete = false; },
-                                egui::Key::ArrowRight => { ed.move_right(); self.app.show_autocomplete = false; },
-                                egui::Key::Home => ed.move_home(),
-                                egui::Key::End => ed.move_end(),
-                                egui::Key::Backspace => { ed.delete_back(); self.app.show_autocomplete = false; },
-                                egui::Key::Delete => ed.delete_forward(),
-                                egui::Key::Enter => ed.insert_newline(),
+                                egui::Key::ArrowUp => {
+                                    if shift { ed.ensure_selection_anchor(); }
+                                    ed.move_up();
+                                    if shift { ed.update_selection_end(); } else { ed.selection = None; }
+                                    self.app.show_autocomplete = false;
+                                },
+                                egui::Key::ArrowDown => {
+                                    if shift { ed.ensure_selection_anchor(); }
+                                    ed.move_down();
+                                    if shift { ed.update_selection_end(); } else { ed.selection = None; }
+                                    self.app.show_autocomplete = false;
+                                },
+                                egui::Key::ArrowLeft if modifiers.alt && shift => {
+                                    ed.ensure_selection_anchor();
+                                    ed.move_word_left();
+                                    ed.update_selection_end();
+                                },
+                                egui::Key::ArrowRight if modifiers.alt && shift => {
+                                    ed.ensure_selection_anchor();
+                                    ed.move_word_right();
+                                    ed.update_selection_end();
+                                },
+                                egui::Key::ArrowLeft if modifiers.alt => { ed.selection = None; ed.move_word_left(); },
+                                egui::Key::ArrowRight if modifiers.alt => { ed.selection = None; ed.move_word_right(); },
+                                egui::Key::ArrowLeft if shift => {
+                                    ed.ensure_selection_anchor();
+                                    ed.move_left();
+                                    ed.update_selection_end();
+                                    self.app.show_autocomplete = false;
+                                },
+                                egui::Key::ArrowRight if shift => {
+                                    ed.ensure_selection_anchor();
+                                    ed.move_right();
+                                    ed.update_selection_end();
+                                    self.app.show_autocomplete = false;
+                                },
+                                egui::Key::ArrowLeft => { ed.selection = None; ed.move_left(); self.app.show_autocomplete = false; },
+                                egui::Key::ArrowRight => { ed.selection = None; ed.move_right(); self.app.show_autocomplete = false; },
+                                egui::Key::Home if shift => {
+                                    ed.ensure_selection_anchor();
+                                    ed.move_home();
+                                    ed.update_selection_end();
+                                },
+                                egui::Key::End if shift => {
+                                    ed.ensure_selection_anchor();
+                                    ed.move_end();
+                                    ed.update_selection_end();
+                                },
+                                egui::Key::Home => { ed.selection = None; ed.move_home(); },
+                                egui::Key::End => { ed.selection = None; ed.move_end(); },
+                                egui::Key::Backspace => {
+                                    if ed.selection.is_some() {
+                                        ed.save_undo_snapshot();
+                                        ed.delete_selection_text();
+                                    } else {
+                                        ed.delete_back();
+                                    }
+                                    self.app.show_autocomplete = false;
+                                },
+                                egui::Key::Delete => {
+                                    if ed.selection.is_some() {
+                                        ed.save_undo_snapshot();
+                                        ed.delete_selection_text();
+                                    } else {
+                                        ed.delete_forward();
+                                    }
+                                },
+                                egui::Key::Enter => {
+                                    ed.delete_selection_text();
+                                    ed.insert_newline();
+                                },
                                 egui::Key::Tab if modifiers.shift => ed.outdent(),
                                 egui::Key::Tab => ed.insert_tab(),
                                 egui::Key::D if modifiers.command && modifiers.shift => ed.duplicate_line(),
@@ -237,9 +301,26 @@ impl CodeEditorApp {
             let avail = ui.available_size();
             let (rect, response) = ui.allocate_exact_size(avail, egui::Sense::click_and_drag());
 
-            // Click handling
+            // Click handling — single click, double-click, drag
             let minimap_w_check = if self.app.show_minimap { 80.0 } else { 0.0 };
-            if response.clicked() {
+
+            // Double-click to select word
+            if response.double_clicked() {
+                self.app.focus = Focus::Editor;
+                if let Some(pos) = response.interact_pointer_pos() {
+                    if !(self.app.show_minimap && pos.x > rect.max.x - minimap_w_check) {
+                        let rel = pos - rect.min;
+                        let row_idx = (rel.y / lh) as usize;
+                        let ed = &mut self.app.editors[self.app.active_editor];
+                        let vis_lines = ed.visible_lines(ed.scroll_offset, ed.viewport_height + 2);
+                        let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
+                        let cc = ((rel.x - gw).max(0.0) / cw) as usize;
+                        ed.cursor.line = actual_line;
+                        ed.cursor.col = cc.min(ed.buffer.line_len(actual_line));
+                        ed.select_word_at_cursor();
+                    }
+                }
+            } else if response.clicked() {
                 self.app.focus = Focus::Editor;
                 if let Some(pos) = response.interact_pointer_pos() {
                     if !(self.app.show_minimap && pos.x > rect.max.x - minimap_w_check) {
@@ -249,7 +330,7 @@ impl CodeEditorApp {
                         let vis_lines = ed.visible_lines(ed.scroll_offset, ed.viewport_height + 2);
                         let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
 
-                        if rel.x < gw - fold_w + fold_w {
+                        if rel.x < gw {
                             if ed.fold_ranges.contains_key(&actual_line) {
                                 ed.toggle_fold(actual_line);
                             } else {
@@ -267,6 +348,43 @@ impl CodeEditorApp {
                 }
             }
 
+            // Drag to select
+            if response.drag_started() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    if !(self.app.show_minimap && pos.x > rect.max.x - minimap_w_check) {
+                        let rel = pos - rect.min;
+                        let row_idx = (rel.y / lh) as usize;
+                        let ed = &mut self.app.editors[self.app.active_editor];
+                        let vis_lines = ed.visible_lines(ed.scroll_offset, ed.viewport_height + 2);
+                        let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
+                        let cc = ((rel.x - gw).max(0.0) / cw) as usize;
+                        let col = cc.min(ed.buffer.line_len(actual_line));
+                        ed.cursor.line = actual_line;
+                        ed.cursor.col = col;
+                        ed.selection = Some(crate::editor::Selection {
+                            start_line: actual_line, start_col: col,
+                            end_line: actual_line, end_col: col,
+                        });
+                    }
+                }
+            }
+            if response.dragged() {
+                if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                    if !(self.app.show_minimap && pos.x > rect.max.x - minimap_w_check) {
+                        let rel = pos - rect.min;
+                        let row_idx = (rel.y / lh) as usize;
+                        let ed = &mut self.app.editors[self.app.active_editor];
+                        let vis_lines = ed.visible_lines(ed.scroll_offset, ed.viewport_height + 2);
+                        let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
+                        let cc = ((rel.x - gw).max(0.0) / cw) as usize;
+                        let col = cc.min(ed.buffer.line_len(actual_line));
+                        ed.cursor.line = actual_line;
+                        ed.cursor.col = col;
+                        ed.update_selection_end();
+                    }
+                }
+            }
+
             // Scroll
             let cmd_held = ui.input(|i| i.modifiers.command);
             let sd = ui.input(|i| i.smooth_scroll_delta.y);
@@ -278,7 +396,9 @@ impl CodeEditorApp {
                 } else {
                     let ed = &mut self.app.editors[self.app.active_editor];
                     let lines = (-sd / lh) as isize;
-                    if lines > 0 { ed.scroll_offset = (ed.scroll_offset + lines as usize).min(lc.saturating_sub(1)); }
+                    // Allow scrolling past end by half a screen
+                    let max_scroll = lc.saturating_sub(1) + ed.viewport_height / 2;
+                    if lines > 0 { ed.scroll_offset = (ed.scroll_offset + lines as usize).min(max_scroll); }
                     else if lines < 0 { ed.scroll_offset = ed.scroll_offset.saturating_sub((-lines) as usize); }
                 }
             }
@@ -368,6 +488,28 @@ impl CodeEditorApp {
                 let hls = syntax::highlight_line(&line, &lang);
                 let chars: Vec<char> = line.chars().collect();
                 let xs = rect.min.x + gw;
+
+                // Selection highlight
+                if let Some(sel) = ed.normalized_selection() {
+                    if li >= sel.start_line && li <= sel.end_line {
+                        let sel_start = if li == sel.start_line { sel.start_col } else { 0 };
+                        let line_len = ed.buffer.line_len(li);
+                        let sel_end = if li == sel.end_line { sel.end_col } else { line_len };
+                        if sel_start < sel_end || li < sel.end_line {
+                            let sx = xs + sel_start as f32 * cw;
+                            let sw = if li < sel.end_line && li != sel.end_line {
+                                // Full line selected — extend to edge
+                                (line_len.max(sel_start + 1) - sel_start) as f32 * cw + cw
+                            } else {
+                                (sel_end - sel_start) as f32 * cw
+                            };
+                            painter.rect_filled(
+                                Rect::from_min_size(Pos2::new(sx, y), Vec2::new(sw.max(cw * 0.5), lh)),
+                                Rounding::ZERO, self.tc.selection_bg,
+                            );
+                        }
+                    }
+                }
 
                 // Find match highlights
                 for m in &self.app.find_matches {
