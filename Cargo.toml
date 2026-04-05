@@ -7,16 +7,11 @@ edition = "2021"
 # GUI
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
 egui = "0.31"
-egui_extras = "0.31"
-
 # Text buffer
 ropey = "1.6"
 
 # Git
 git2 = "0.19"
-
-# Async
-tokio = { version = "1", features = ["full"] }
 
 # File system
 walkdir = "2"

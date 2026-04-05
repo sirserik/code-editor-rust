@@ -234,3 +234,66 @@ pub fn replace_in_content(
         None => content.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_in_content_basic() {
+        let matches = find_in_content("hello world\nhello again", "hello", false, false);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].line, 0);
+        assert_eq!(matches[0].col, 0);
+        assert_eq!(matches[1].line, 1);
+    }
+
+    #[test]
+    fn find_case_insensitive() {
+        let matches = find_in_content("Hello HELLO hello", "hello", false, false);
+        assert_eq!(matches.len(), 3);
+    }
+
+    #[test]
+    fn find_case_sensitive() {
+        let matches = find_in_content("Hello HELLO hello", "hello", true, false);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].col, 12);
+    }
+
+    #[test]
+    fn find_with_regex() {
+        let matches = find_in_content("foo123 bar456 baz", r"\w+\d+", false, true);
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn find_no_matches() {
+        let matches = find_in_content("hello world", "xyz", false, false);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn replace_in_content_all() {
+        let result = replace_in_content("foo bar foo", "foo", "baz", false, false, true);
+        assert_eq!(result, "baz bar baz");
+    }
+
+    #[test]
+    fn replace_in_content_single() {
+        let result = replace_in_content("foo bar foo", "foo", "baz", false, false, false);
+        assert_eq!(result, "baz bar foo");
+    }
+
+    #[test]
+    fn replace_case_insensitive() {
+        let result = replace_in_content("Foo FOO foo", "foo", "x", false, false, true);
+        assert_eq!(result, "x x x");
+    }
+
+    #[test]
+    fn invalid_regex_returns_empty() {
+        let matches = find_in_content("hello", "[invalid", false, true);
+        assert!(matches.is_empty());
+    }
+}

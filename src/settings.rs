@@ -364,7 +364,9 @@ impl Settings {
     pub fn save(&self) {
         let path = Self::config_path();
         if let Ok(data) = serde_json::to_string_pretty(self) {
-            fs::write(path, data).ok();
+            if let Err(e) = fs::write(&path, data) {
+                eprintln!("Failed to save settings to {}: {}", path.display(), e);
+            }
         }
     }
 }

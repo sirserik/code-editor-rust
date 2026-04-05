@@ -449,18 +449,18 @@ impl Editor {
 
     pub fn save_undo_snapshot(&mut self) {
         let content = self.buffer.text();
-        let cursor_line = self.cursor.line;
-        let cursor_col = self.cursor.col;
         // Don't save duplicate snapshots
         if let Some(last) = self.undo_stack.last() {
             if last.0 == content {
                 return;
             }
         }
+        let cursor_line = self.cursor.line;
+        let cursor_col = self.cursor.col;
         self.undo_stack.push((content, cursor_line, cursor_col));
-        // Limit stack size
+        // Limit stack size — use swap_remove-like drain for efficiency
         if self.undo_stack.len() > 200 {
-            self.undo_stack.remove(0);
+            self.undo_stack.drain(..50);
         }
     }
 
@@ -545,7 +545,7 @@ impl Editor {
     pub fn compute_line_diff(&mut self) {
         self.line_diff.clear();
         let original = match &self.original_content {
-            Some(c) => c.clone(),
+            Some(c) => c,
             None => return,
         };
         let orig_lines: Vec<&str> = original.lines().collect();
@@ -705,5 +705,202 @@ impl Editor {
             li += 1;
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn editor_with_text(text: &str) -> Editor {
+        let mut ed = Editor::new();
+        for c in text.chars() {
+            if c == '\n' {
+                ed.insert_newline();
+            } else {
+                ed.insert_char(c);
+            }
+        }
+        ed.cursor.line = 0;
+        ed.cursor.col = 0;
+        ed
+    }
+
+    #[test]
+    fn new_editor_is_empty() {
+        let ed = Editor::new();
+        assert_eq!(ed.line_count(), 1);
+        assert!(!ed.is_dirty);
+        assert!(ed.file_path.is_none());
+    }
+
+    #[test]
+    fn insert_char_marks_dirty() {
+        let mut ed = Editor::new();
+        ed.insert_char('a');
+        assert!(ed.is_dirty);
+        assert_eq!(ed.buffer.get_line(0), "a");
+        assert_eq!(ed.cursor.col, 1);
+    }
+
+    #[test]
+    fn insert_newline_moves_cursor() {
+        let mut ed = Editor::new();
+        ed.insert_char('A');
+        ed.insert_newline();
+        assert_eq!(ed.cursor.line, 1);
+        assert_eq!(ed.cursor.col, 0);
+        assert_eq!(ed.line_count(), 2);
+    }
+
+    #[test]
+    fn move_up_down() {
+        let mut ed = editor_with_text("line1\nline2\nline3");
+        ed.cursor.line = 1;
+        ed.cursor.col = 0;
+        ed.move_up();
+        assert_eq!(ed.cursor.line, 0);
+        ed.move_down();
+        assert_eq!(ed.cursor.line, 1);
+        ed.move_down();
+        assert_eq!(ed.cursor.line, 2);
+        ed.move_down(); // Already at last line
+        assert_eq!(ed.cursor.line, 2);
+    }
+
+    #[test]
+    fn move_left_right() {
+        let mut ed = editor_with_text("AB");
+        ed.cursor.col = 0;
+        ed.move_right();
+        assert_eq!(ed.cursor.col, 1);
+        ed.move_left();
+        assert_eq!(ed.cursor.col, 0);
+        ed.move_left(); // Already at start
+        assert_eq!(ed.cursor.col, 0);
+    }
+
+    #[test]
+    fn move_left_wraps_to_previous_line() {
+        let mut ed = editor_with_text("AB\nCD");
+        ed.cursor.line = 1;
+        ed.cursor.col = 0;
+        ed.move_left();
+        assert_eq!(ed.cursor.line, 0);
+        assert_eq!(ed.cursor.col, 2);
+    }
+
+    #[test]
+    fn move_right_wraps_to_next_line() {
+        let mut ed = editor_with_text("AB\nCD");
+        ed.cursor.line = 0;
+        ed.cursor.col = 2;
+        ed.move_right();
+        assert_eq!(ed.cursor.line, 1);
+        assert_eq!(ed.cursor.col, 0);
+    }
+
+    #[test]
+    fn delete_back_joins_lines() {
+        let mut ed = editor_with_text("AB\nCD");
+        ed.cursor.line = 1;
+        ed.cursor.col = 0;
+        ed.delete_back();
+        assert_eq!(ed.line_count(), 1);
+        assert_eq!(ed.buffer.get_line(0), "ABCD");
+        assert_eq!(ed.cursor.col, 2);
+    }
+
+    #[test]
+    fn select_all_and_get_text() {
+        let mut ed = editor_with_text("Hello\nWorld");
+        ed.select_all();
+        assert!(ed.selection.is_some());
+        let text = ed.get_selected_text().unwrap();
+        assert_eq!(text, "Hello\nWorld");
+    }
+
+    #[test]
+    fn undo_restores_state() {
+        let mut ed = Editor::new();
+        ed.save_undo_snapshot();
+        ed.insert_char('A');
+        ed.insert_char('B');
+        ed.save_undo_snapshot();
+        assert_eq!(ed.buffer.get_line(0), "AB");
+        ed.undo();
+        assert_eq!(ed.buffer.text(), "");
+    }
+
+    #[test]
+    fn move_home_smart() {
+        let mut ed = editor_with_text("    indented");
+        ed.cursor.line = 0;
+        ed.cursor.col = 8;
+        ed.move_home(); // First press: go to first non-ws (col 4)
+        assert_eq!(ed.cursor.col, 4);
+        ed.move_home(); // Second press: go to col 0
+        assert_eq!(ed.cursor.col, 0);
+    }
+
+    #[test]
+    fn move_end() {
+        let mut ed = editor_with_text("Hello");
+        ed.cursor.col = 0;
+        ed.move_end();
+        assert_eq!(ed.cursor.col, 5);
+    }
+
+    #[test]
+    fn file_name_returns_untitled_for_new() {
+        let ed = Editor::new();
+        assert_eq!(ed.file_name(), "untitled");
+    }
+
+    #[test]
+    fn collect_words_basic() {
+        let mut ed = editor_with_text("foo bar foo_bar baz foo");
+        ed.cursor.col = 0;
+        let words = ed.collect_words("fo");
+        assert!(words.contains(&"foo".to_string()));
+        assert!(words.contains(&"foo_bar".to_string()));
+        assert!(!words.contains(&"bar".to_string()));
+    }
+
+    #[test]
+    fn delete_line_works() {
+        let mut ed = editor_with_text("A\nB\nC");
+        ed.cursor.line = 1;
+        ed.delete_line();
+        assert_eq!(ed.line_count(), 2);
+        assert_eq!(ed.buffer.get_line(0), "A");
+        assert_eq!(ed.buffer.get_line(1), "C");
+    }
+
+    #[test]
+    fn insert_tab_inserts_spaces() {
+        let mut ed = Editor::new();
+        ed.insert_tab();
+        assert_eq!(ed.buffer.get_line(0), "    ");
+        assert_eq!(ed.cursor.col, 4);
+    }
+
+    #[test]
+    fn page_up_down() {
+        let mut ed = editor_with_text(&"line\n".repeat(100));
+        ed.viewport_height = 20;
+        ed.cursor.line = 50;
+        ed.page_up();
+        assert!(ed.cursor.line < 50);
+        let line_after_up = ed.cursor.line;
+        ed.page_down();
+        assert!(ed.cursor.line > line_after_up);
+    }
+
+    #[test]
+    fn go_to_line() {
+        let mut ed = editor_with_text(&"line\n".repeat(50));
+        ed.go_to_line(25);
+        assert_eq!(ed.cursor.line, 24); // 0-indexed
     }
 }

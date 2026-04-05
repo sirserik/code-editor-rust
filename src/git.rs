@@ -122,54 +122,24 @@ impl GitManager {
             let path = entry.path().unwrap_or("").to_string();
             let status = entry.status();
 
+            // Index (staged) status — one entry per file
             if status.is_index_new() {
-                files.push(GitFileStatus {
-                    path: path.clone(),
-                    status: FileStatus::Added,
-                    staged: true,
-                });
+                files.push(GitFileStatus { path: path.clone(), status: FileStatus::Added, staged: true });
+            } else if status.is_index_modified() {
+                files.push(GitFileStatus { path: path.clone(), status: FileStatus::Modified, staged: true });
+            } else if status.is_index_deleted() {
+                files.push(GitFileStatus { path: path.clone(), status: FileStatus::Deleted, staged: true });
+            } else if status.is_index_renamed() {
+                files.push(GitFileStatus { path: path.clone(), status: FileStatus::Renamed, staged: true });
             }
-            if status.is_index_modified() {
-                files.push(GitFileStatus {
-                    path: path.clone(),
-                    status: FileStatus::Modified,
-                    staged: true,
-                });
-            }
-            if status.is_index_deleted() {
-                files.push(GitFileStatus {
-                    path: path.clone(),
-                    status: FileStatus::Deleted,
-                    staged: true,
-                });
-            }
-            if status.is_index_renamed() {
-                files.push(GitFileStatus {
-                    path: path.clone(),
-                    status: FileStatus::Renamed,
-                    staged: true,
-                });
-            }
+
+            // Working tree (unstaged) status — one entry per file
             if status.is_wt_modified() {
-                files.push(GitFileStatus {
-                    path: path.clone(),
-                    status: FileStatus::Modified,
-                    staged: false,
-                });
-            }
-            if status.is_wt_new() {
-                files.push(GitFileStatus {
-                    path: path.clone(),
-                    status: FileStatus::Untracked,
-                    staged: false,
-                });
-            }
-            if status.is_wt_deleted() {
-                files.push(GitFileStatus {
-                    path: path.clone(),
-                    status: FileStatus::Deleted,
-                    staged: false,
-                });
+                files.push(GitFileStatus { path: path.clone(), status: FileStatus::Modified, staged: false });
+            } else if status.is_wt_new() {
+                files.push(GitFileStatus { path: path.clone(), status: FileStatus::Untracked, staged: false });
+            } else if status.is_wt_deleted() {
+                files.push(GitFileStatus { path: path.clone(), status: FileStatus::Deleted, staged: false });
             }
         }
 

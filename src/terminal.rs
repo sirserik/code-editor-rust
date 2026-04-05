@@ -57,7 +57,7 @@ impl TerminalManager {
 
         // Initialize buffer
         {
-            let mut buf = output_buffer.lock().unwrap();
+            let mut buf = output_buffer.lock().map_err(|e| format!("Mutex poisoned: {}", e))?;
             buf.insert(id, Vec::new());
         }
 
@@ -71,6 +71,12 @@ impl TerminalManager {
                         if let Ok(mut buffers) = output_buffer.lock() {
                             if let Some(output) = buffers.get_mut(&id) {
                                 output.extend_from_slice(&buf[..n]);
+                                // Cap buffer at 1MB to prevent unbounded growth
+                                const MAX_BUFFER: usize = 1024 * 1024;
+                                if output.len() > MAX_BUFFER {
+                                    let drain_to = output.len() - MAX_BUFFER;
+                                    output.drain(..drain_to);
+                                }
                             }
                         }
                     }

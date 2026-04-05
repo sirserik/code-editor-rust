@@ -23,6 +23,7 @@ pub enum Focus {
     CommitInput,
     SaveAsDialog,
     Autocomplete,
+    About,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -117,6 +118,9 @@ pub struct App {
 
     // Async git status
     pub git_rx: Option<std::sync::mpsc::Receiver<crate::git::GitStatus>>,
+
+    // Debounce: last search trigger time
+    pub last_search_trigger: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +208,7 @@ impl App {
             folder_picker_rx: None,
             search_rx: None,
             git_rx: None,
+            last_search_trigger: None,
         }
     }
 
@@ -670,46 +675,50 @@ impl App {
 // Git panel helpers for GUI
 impl App {
     pub fn git_stage_selected(&mut self) {
-        if let Some(ref status) = self.git_status.clone() {
-            if let Some(file) = status.files.get(self.git_selected) {
-                if let Some(ref root) = self.file_tree.root_path.clone() {
-                    match self.git.stage_file(root, &file.path) {
-                        Ok(_) => {
-                            self.status_message = format!("Staged: {}", file.path);
-                            self.refresh_git_status();
-                        }
-                        Err(e) => self.status_message = format!("Error: {}", e),
-                    }
-                }
+        let (file_path, root) = match (&self.git_status, &self.file_tree.root_path) {
+            (Some(status), Some(root)) => match status.files.get(self.git_selected) {
+                Some(file) => (file.path.clone(), root.clone()),
+                None => return,
+            },
+            _ => return,
+        };
+        match self.git.stage_file(&root, &file_path) {
+            Ok(_) => {
+                self.status_message = format!("Staged: {}", file_path);
+                self.refresh_git_status();
             }
+            Err(e) => self.status_message = format!("Error: {}", e),
         }
     }
 
     pub fn git_unstage_selected(&mut self) {
-        if let Some(ref status) = self.git_status.clone() {
-            if let Some(file) = status.files.get(self.git_selected) {
-                if let Some(ref root) = self.file_tree.root_path.clone() {
-                    match self.git.unstage_file(root, &file.path) {
-                        Ok(_) => {
-                            self.status_message = format!("Unstaged: {}", file.path);
-                            self.refresh_git_status();
-                        }
-                        Err(e) => self.status_message = format!("Error: {}", e),
-                    }
-                }
+        let (file_path, root) = match (&self.git_status, &self.file_tree.root_path) {
+            (Some(status), Some(root)) => match status.files.get(self.git_selected) {
+                Some(file) => (file.path.clone(), root.clone()),
+                None => return,
+            },
+            _ => return,
+        };
+        match self.git.unstage_file(&root, &file_path) {
+            Ok(_) => {
+                self.status_message = format!("Unstaged: {}", file_path);
+                self.refresh_git_status();
             }
+            Err(e) => self.status_message = format!("Error: {}", e),
         }
     }
 
     pub fn git_stage_all(&mut self) {
-        if let Some(ref root) = self.file_tree.root_path.clone() {
-            match self.git.stage_all(root) {
-                Ok(_) => {
-                    self.status_message = "Staged all files".into();
-                    self.refresh_git_status();
-                }
-                Err(e) => self.status_message = format!("Error: {}", e),
+        let root = match &self.file_tree.root_path {
+            Some(r) => r.clone(),
+            None => return,
+        };
+        match self.git.stage_all(&root) {
+            Ok(_) => {
+                self.status_message = "Staged all files".into();
+                self.refresh_git_status();
             }
+            Err(e) => self.status_message = format!("Error: {}", e),
         }
     }
 

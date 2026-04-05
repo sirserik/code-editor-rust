@@ -198,3 +198,134 @@ impl Buffer {
         self.rope.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_buffer_is_empty() {
+        let buf = Buffer::new();
+        assert_eq!(buf.line_count(), 1);
+        assert_eq!(buf.text(), "");
+    }
+
+    #[test]
+    fn insert_char_and_read() {
+        let mut buf = Buffer::new();
+        buf.insert_char(0, 0, 'H');
+        buf.insert_char(0, 1, 'i');
+        assert_eq!(buf.get_line(0), "Hi");
+        assert_eq!(buf.line_len(0), 2);
+    }
+
+    #[test]
+    fn insert_newline_splits_line() {
+        let mut buf = Buffer::new();
+        buf.insert_char(0, 0, 'A');
+        buf.insert_char(0, 1, 'B');
+        buf.insert_newline(0, 1); // Split between A and B
+        assert_eq!(buf.line_count(), 2);
+        assert_eq!(buf.get_line(0), "A");
+        assert_eq!(buf.get_line(1), "B");
+    }
+
+    #[test]
+    fn delete_char_works() {
+        let mut buf = Buffer::new();
+        buf.insert_char(0, 0, 'A');
+        buf.insert_char(0, 1, 'B');
+        buf.insert_char(0, 2, 'C');
+        buf.delete_char(0, 1); // Delete 'B'
+        assert_eq!(buf.get_line(0), "AC");
+    }
+
+    #[test]
+    fn join_lines_works() {
+        let mut buf = Buffer::new();
+        buf.insert_char(0, 0, 'A');
+        buf.insert_newline(0, 1);
+        buf.insert_char(1, 0, 'B');
+        assert_eq!(buf.line_count(), 2);
+        buf.join_lines(0);
+        assert_eq!(buf.line_count(), 1);
+        assert_eq!(buf.get_line(0), "AB");
+    }
+
+    #[test]
+    fn delete_line_works() {
+        let mut buf = Buffer::new();
+        buf.insert_char(0, 0, 'A');
+        buf.insert_newline(0, 1);
+        buf.insert_char(1, 0, 'B');
+        buf.insert_newline(1, 1);
+        buf.insert_char(2, 0, 'C');
+        assert_eq!(buf.line_count(), 3);
+        buf.delete_line(1); // Delete line "B"
+        assert_eq!(buf.line_count(), 2);
+        assert_eq!(buf.get_line(0), "A");
+        assert_eq!(buf.get_line(1), "C");
+    }
+
+    #[test]
+    fn swap_lines_works() {
+        let mut buf = Buffer::new();
+        buf.insert_char(0, 0, 'A');
+        buf.insert_newline(0, 1);
+        buf.insert_char(1, 0, 'B');
+        buf.swap_lines(0, 1);
+        assert_eq!(buf.get_line(0), "B");
+        assert_eq!(buf.get_line(1), "A");
+    }
+
+    #[test]
+    fn duplicate_line_works() {
+        let mut buf = Buffer::new();
+        buf.insert_char(0, 0, 'A');
+        buf.insert_newline(0, 1);
+        buf.insert_char(1, 0, 'B');
+        // Now we have "A\nB" — 2 lines
+        assert_eq!(buf.line_count(), 2);
+        buf.duplicate_line(0); // Duplicate "A" line
+        assert_eq!(buf.line_count(), 3);
+        assert_eq!(buf.get_line(0), "A");
+        assert_eq!(buf.get_line(1), "A");
+        assert_eq!(buf.get_line(2), "B");
+    }
+
+    #[test]
+    fn get_range_works() {
+        let mut buf = Buffer::new();
+        for c in "Hello".chars() {
+            let col = buf.line_len(0);
+            buf.insert_char(0, col, c);
+        }
+        assert_eq!(buf.get_range(0, 1, 0, 4), "ell");
+    }
+
+    #[test]
+    fn delete_range_works() {
+        let mut buf = Buffer::new();
+        for c in "Hello".chars() {
+            let col = buf.line_len(0);
+            buf.insert_char(0, col, c);
+        }
+        buf.delete_range(0, 1, 0, 4); // Delete "ell"
+        assert_eq!(buf.get_line(0), "Ho");
+    }
+
+    #[test]
+    fn insert_text_works() {
+        let mut buf = Buffer::new();
+        buf.insert_text(0, 0, "Hello World");
+        assert_eq!(buf.get_line(0), "Hello World");
+        assert_eq!(buf.line_len(0), 11);
+    }
+
+    #[test]
+    fn get_line_indent_works() {
+        let mut buf = Buffer::new();
+        buf.insert_text(0, 0, "    indented");
+        assert_eq!(buf.get_line_indent(0), "    ");
+    }
+}
