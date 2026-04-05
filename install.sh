@@ -4,7 +4,11 @@ set -e
 echo "=== Code Editor - macOS Installer ==="
 echo ""
 
-# Build release binary
+# Kill ALL running instances
+echo "[0/4] Closing running instances..."
+pkill -x "code-editor-rust" 2>/dev/null || true
+sleep 0.5
+
 echo "[1/4] Building release binary..."
 cargo build --release 2>&1 | tail -1
 
@@ -31,12 +35,10 @@ mkdir -p "$RESOURCES"
 
 # Copy files
 cp resources/Info.plist "$CONTENTS/"
-cp resources/code-editor-launcher "$MACOS/"
 cp "$BINARY" "$MACOS/code-editor-rust"
 cp resources/AppIcon.icns "$RESOURCES/"
 
 # Make executable
-chmod +x "$MACOS/code-editor-launcher"
 chmod +x "$MACOS/code-editor-rust"
 
 echo "[3/4] Installing CLI command..."
@@ -65,3 +67,6 @@ echo "    - Applications folder"
 echo "    - Terminal: code-editor ."
 echo "    - Right-click file → Open With → Code Editor"
 echo ""
+
+# Launch one instance
+open "$APP_DIR"

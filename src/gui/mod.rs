@@ -27,6 +27,24 @@ pub(crate) fn small() -> FontId { FontId::monospace(12.5) }
 
 /// File type icon color for JetBrains-style colored dot/letter indicators
 pub(crate) fn file_icon_color(name: &str, dark: bool) -> Color32 {
+    // Check full filename first for dotfiles
+    match name {
+        ".env" | ".env.local" | ".env.production" | ".env.development" | ".env.test" | ".env.example"
+            => return Color32::from_rgb(250, 189, 47), // yellow — secrets/config
+        ".htaccess" | ".nginx.conf"
+            => return Color32::from_rgb(106, 171, 115), // green — server config
+        ".gitignore" | ".dockerignore" | ".hgignore"
+            => return Color32::from_rgb(128, 128, 128), // gray
+        ".editorconfig" | ".prettierrc" | ".eslintrc" | ".npmrc"
+            => return Color32::from_rgb(152, 118, 170), // purple — config
+        ".bashrc" | ".zshrc" | ".bash_profile" | ".profile"
+            => return Color32::from_rgb(106, 171, 115), // green — shell
+        "Dockerfile" | "dockerfile"
+            => return Color32::from_rgb(55, 125, 207), // blue — docker
+        "Makefile" | "makefile"
+            => return Color32::from_rgb(204, 120, 50), // orange
+        _ => {}
+    }
     let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
         "rs" => Color32::from_rgb(204, 120, 50),

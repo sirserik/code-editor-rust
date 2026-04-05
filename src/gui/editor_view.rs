@@ -724,12 +724,16 @@ impl CodeEditorApp {
     }
 
     fn render_welcome(&mut self, ui: &mut egui::Ui) {
+        let dark = self.app.settings.theme != Theme::Light;
+        let mut open_project: Option<String> = None;
+        let mut remove_project: Option<String> = None;
+
         ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.2);
+            ui.add_space(ui.available_height() * 0.12);
             ui.label(RichText::new("Code Editor").font(FontId::monospace(28.0)).color(self.tc.accent));
             ui.add_space(8.0);
             ui.label(RichText::new("Lightweight • Fast • Native").font(FontId::monospace(14.0)).color(self.tc.gutter_fg));
-            ui.add_space(32.0);
+            ui.add_space(24.0);
 
             let btn_width = 220.0;
             let btn_height = 36.0;
@@ -751,13 +755,78 @@ impl CodeEditorApp {
                 self.app.pending_action = Some(PaletteAction::OpenFile);
             }
 
-            ui.add_space(40.0);
+            // Recent Projects
+            let recent = self.app.settings.recent_projects.clone();
+            if !recent.is_empty() {
+                ui.add_space(28.0);
+                ui.label(RichText::new("Recent Projects").font(FontId::monospace(13.0)).color(self.tc.fg_dim));
+                ui.add_space(8.0);
+
+                let row_w = 380.0;
+                for project in &recent {
+                    let exists = std::path::Path::new(&project.path).exists();
+                    let offset = (ui.available_width() - row_w) / 2.0;
+
+                    ui.horizontal(|ui| {
+                        ui.add_space(offset.max(0.0));
+
+                        let row_color = if exists { self.tc.fg } else { self.tc.fg_dim };
+                        let hover_bg = if dark { Color32::from_rgb(45, 45, 55) } else { Color32::from_rgb(240, 240, 245) };
+
+                        let resp = ui.add_sized([row_w, 30.0],
+                            egui::Button::new(
+                                RichText::new(format!("  {}  {}", project.name,
+                                    if !exists { " (missing)" } else { "" }))
+                                    .font(FontId::monospace(12.0)).color(row_color)
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .rounding(Rounding::same(4))
+                            .stroke(Stroke::NONE)
+                        );
+
+                        let hovered = resp.hovered();
+                        let clicked = resp.clicked();
+                        let r = resp.rect;
+
+                        // Right-click to remove
+                        resp.context_menu(|ui| {
+                            if ui.button("Remove from Recent").clicked() {
+                                remove_project = Some(project.path.clone());
+                                ui.close_menu();
+                            }
+                            if exists {
+                                if ui.button("Reveal in Finder").clicked() {
+                                    let _ = std::process::Command::new("open").arg(&project.path).spawn();
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+
+                        if hovered {
+                            ui.painter().rect_filled(r, Rounding::same(4), hover_bg);
+                            ui.painter().text(
+                                Pos2::new(r.min.x + 12.0, r.center().y - 6.0),
+                                egui::Align2::LEFT_TOP,
+                                &project.name,
+                                FontId::monospace(12.0),
+                                self.tc.accent,
+                            );
+                        }
+
+                        if clicked && exists {
+                            open_project = Some(project.path.clone());
+                        }
+                    });
+                }
+            }
+
+            ui.add_space(24.0);
             ui.label(RichText::new("Keyboard Shortcuts").font(FontId::monospace(13.0)).color(self.tc.fg_dim));
             ui.add_space(8.0);
             for (keys, desc) in [
                 ("⌘+Shift+P", "Command Palette"),
                 ("⌘+P", "Quick Open File"),
-                ("⌘+O", "Open File"),
+                ("⌘+O", "Open Folder"),
                 ("⌘+S", "Save"),
                 ("⌘+B", "Toggle Sidebar"),
             ] {
@@ -770,6 +839,14 @@ impl CodeEditorApp {
                 });
             }
         });
+
+        // Handle deferred actions outside borrow
+        if let Some(path) = open_project {
+            self.app.open_folder(path);
+        }
+        if let Some(path) = remove_project {
+            self.app.settings.remove_recent_project(&path);
+        }
     }
 
     fn render_breadcrumbs(&self, ui: &mut egui::Ui) {

@@ -251,6 +251,8 @@ impl App {
         self.status_message = format!("Opening: {}...", name);
         self.file_tree.load(&path);
         self.status_message = format!("Opened: {}", name);
+        // Save to recent projects
+        self.settings.add_recent_project(&path);
         // Git status in background
         self.refresh_git_async();
     }

@@ -131,10 +131,27 @@ pub fn detect_language(path: &str) -> &str {
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
             match name {
-                "Dockerfile" => "dockerfile",
-                "Makefile" | "makefile" => "makefile",
-                ".gitignore" | ".dockerignore" => "gitignore",
-                _ => "text",
+                "Dockerfile" | "dockerfile" => "dockerfile",
+                "Makefile" | "makefile" | "GNUmakefile" => "makefile",
+                ".gitignore" | ".dockerignore" | ".hgignore" => "gitignore",
+                ".env" | ".env.local" | ".env.production" | ".env.development" | ".env.test" | ".env.example" => "sh",
+                ".htaccess" => "apache",
+                ".bashrc" | ".zshrc" | ".bash_profile" | ".zprofile" | ".profile" | ".zshenv" => "sh",
+                ".editorconfig" | ".prettierrc" | ".eslintrc" => "toml",
+                ".npmrc" | ".yarnrc" => "toml",
+                "docker-compose.yml" | "docker-compose.yaml" => "yaml",
+                "Gemfile" | "Rakefile" => "ruby",
+                "Vagrantfile" => "ruby",
+                "Cargo.lock" => "toml",
+                "package.json" | "tsconfig.json" | "composer.json" => "json",
+                _ => {
+                    // Check if filename starts with dot and has no extension — treat as config/shell
+                    if name.starts_with('.') && !name.contains('.') || name.ends_with("rc") {
+                        "sh"
+                    } else {
+                        "text"
+                    }
+                }
             }
         }
     }

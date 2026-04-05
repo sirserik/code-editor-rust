@@ -10,6 +10,15 @@ pub struct Settings {
     pub word_wrap: bool,
     #[serde(default = "default_font_size")]
     pub font_size: f32,
+    #[serde(default)]
+    pub recent_projects: Vec<RecentProject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentProject {
+    pub path: String,
+    pub name: String,
+    pub timestamp: u64, // unix seconds
 }
 
 fn default_font_size() -> f32 { 14.0 }
@@ -339,7 +348,40 @@ impl Default for Settings {
             show_line_numbers: true,
             word_wrap: false,
             font_size: 14.0,
+            recent_projects: Vec::new(),
         }
+    }
+}
+
+impl Settings {
+    pub fn add_recent_project(&mut self, path: &str) {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Remove if already exists
+        self.recent_projects.retain(|p| p.path != path);
+
+        // Add to front
+        self.recent_projects.insert(0, RecentProject {
+            path: path.to_string(),
+            name,
+            timestamp,
+        });
+
+        // Keep max 10
+        self.recent_projects.truncate(10);
+        self.save();
+    }
+
+    pub fn remove_recent_project(&mut self, path: &str) {
+        self.recent_projects.retain(|p| p.path != path);
+        self.save();
     }
 }
 
