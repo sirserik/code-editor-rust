@@ -54,17 +54,17 @@ impl CodeEditorApp {
     pub(super) fn render_overlays(&mut self, ctx: &egui::Context) {
         let dark = self.app.settings.theme != Theme::Light;
         let popup_frame = |accent: Color32| -> egui::Frame {
-            let popup_bg = if dark { Color32::from_rgb(25, 26, 36) } else { Color32::from_rgb(255, 255, 255) };
-            let shadow_alpha = if dark { 80 } else { 30 };
+            let popup_bg = if dark { Color32::from_rgb(30, 31, 42) } else { Color32::from_rgb(255, 255, 255) };
+            let shadow_alpha = if dark { 50 } else { 20 };
             egui::Frame::NONE
                 .fill(popup_bg)
-                .stroke(Stroke::new(1.0, accent))
-                .rounding(Rounding::same(8))
-                .inner_margin(12.0)
+                .stroke(Stroke::new(1.0, if dark { Color32::from_rgb(55, 56, 70) } else { Color32::from_rgb(210, 210, 215) }))
+                .rounding(Rounding::same(10))
+                .inner_margin(14.0)
                 .shadow(egui::epaint::Shadow {
-                    offset: [0, 4],
-                    blur: 16,
-                    spread: 0,
+                    offset: [0, 8],
+                    blur: 24,
+                    spread: 2,
                     color: Color32::from_black_alpha(shadow_alpha),
                 })
         };

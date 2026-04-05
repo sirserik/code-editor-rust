@@ -143,52 +143,78 @@ impl CodeEditorApp {
 
     pub(super) fn render_tabs(&mut self, ctx: &egui::Context) {
         let mut tab_to_close: Option<usize> = None;
+        let dark = self.app.settings.theme != Theme::Light;
         egui::TopBottomPanel::top("tabs")
-            .exact_height(34.0)
-            .frame(egui::Frame::NONE.fill(self.tc.tab_bar_bg).inner_margin(egui::Margin { left: 4, right: 4, top: 4, bottom: 0 }))
+            .exact_height(36.0)
+            .frame(egui::Frame::NONE.fill(self.tc.tab_bar_bg).inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 0 }))
             .show(ctx, |ui| {
-                let r = ui.max_rect();
+                let panel_rect = ui.max_rect();
+                // Bottom border
                 ui.painter().line_segment(
-                    [Pos2::new(r.min.x, r.max.y), Pos2::new(r.max.x, r.max.y)],
+                    [Pos2::new(panel_rect.min.x, panel_rect.max.y), Pos2::new(panel_rect.max.x, panel_rect.max.y)],
                     Stroke::new(1.0, self.tc.border),
                 );
                 ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing.x = 1.0;
+                    ui.spacing_mut().item_spacing.x = 2.0;
                     for i in 0..self.app.editors.len() {
                         let name = self.app.editors[i].file_name();
                         let dirty = self.app.editors[i].is_dirty;
                         let active = i == self.app.active_editor;
-                        let tc = if active { self.tc.fg } else { self.tc.fg_dim };
-                        let bg = if active { self.tc.bg } else { self.tc.tab_bar_bg };
+                        let text_c = if active { self.tc.fg } else { self.tc.fg_dim };
+                        let bg = if active { self.tc.bg } else { Color32::TRANSPARENT };
                         let rounding = Rounding { nw: 6, ne: 6, sw: 0, se: 0 };
 
                         let frame = egui::Frame::NONE.fill(bg).rounding(rounding)
-                            .stroke(if active { Stroke::new(1.0, self.tc.border) } else { Stroke::NONE })
-                            .inner_margin(egui::Margin { left: 8, right: 2, top: 2, bottom: 2 });
+                            .inner_margin(egui::Margin { left: 10, right: 4, top: 4, bottom: 4 });
 
-                        frame.show(ui, |ui| {
+                        let frame_resp = frame.show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 2.0;
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                // Dirty indicator as colored dot
                                 let dot = if dirty { " ●" } else { "" };
+                                let dot_color = if dirty { self.tc.orange } else { text_c };
                                 let label_resp = ui.add(egui::Label::new(
-                                    RichText::new(format!("{}{}", name, dot)).font(small()).color(tc)
+                                    RichText::new(format!("{}{}", name, dot)).font(small()).color(
+                                        if dirty && !dot.is_empty() { text_c } else { text_c }
+                                    )
                                 ).sense(egui::Sense::click()));
                                 if label_resp.clicked() {
                                     self.app.active_editor = i;
                                     self.app.focus = Focus::Editor;
                                 }
+                                // Close button with hover state
                                 let close_resp = ui.add(
                                     egui::Button::new(
-                                        RichText::new(" × ").font(small()).color(self.tc.fg_dim)
+                                        RichText::new("×").font(FontId::monospace(14.0)).color(self.tc.fg_dim)
                                     )
                                     .frame(false)
-                                    .min_size(egui::vec2(20.0, 20.0))
+                                    .min_size(egui::vec2(18.0, 18.0))
                                 );
+                                // Red hover effect on close button
+                                if close_resp.hovered() {
+                                    let cr = close_resp.rect;
+                                    ui.painter().rect_filled(cr, Rounding::same(3),
+                                        if dark { Color32::from_rgb(180, 50, 50) } else { Color32::from_rgb(220, 80, 80) });
+                                    ui.painter().text(cr.center(), egui::Align2::CENTER_CENTER, "×",
+                                        FontId::monospace(14.0), Color32::WHITE);
+                                }
                                 if close_resp.clicked() {
                                     tab_to_close = Some(i);
                                 }
                             });
                         });
+
+                        // Active tab accent underline
+                        if active {
+                            let tab_rect = frame_resp.response.rect;
+                            ui.painter().rect_filled(
+                                Rect::from_min_size(
+                                    Pos2::new(tab_rect.min.x + 2.0, tab_rect.max.y - 2.0),
+                                    Vec2::new(tab_rect.width() - 4.0, 2.0),
+                                ),
+                                Rounding::same(1), self.tc.accent,
+                            );
+                        }
                     }
                 });
             });
@@ -199,22 +225,51 @@ impl CodeEditorApp {
 
     pub(super) fn render_status(&mut self, ctx: &egui::Context) {
         let tc = self.tc;
+        let dark = self.app.settings.theme != Theme::Light;
+        let status_bg = if dark {
+            Color32::from_rgb(24, 24, 36)
+        } else {
+            Color32::from_rgb(0, 122, 204) // VS Code blue status bar for light theme
+        };
+        let status_fg = if dark { tc.fg_dim } else { Color32::WHITE };
+        let status_accent = if dark { tc.fg } else { Color32::WHITE };
+        let sf = FontId::monospace(11.5);
+
         egui::TopBottomPanel::bottom("status")
-            .exact_height(24.0)
-            .frame(egui::Frame::NONE.fill(tc.accent.linear_multiply(0.15)).inner_margin(egui::Margin::symmetric(8, 2)))
+            .exact_height(26.0)
+            .frame(egui::Frame::NONE.fill(status_bg).inner_margin(egui::Margin::symmetric(10, 3)))
             .show(ctx, |ui| {
                 let ed = &self.app.editors[self.app.active_editor];
                 let lang = ed.file_path.as_ref().map(|p| syntax::detect_language(p)).unwrap_or("Text");
                 let line = ed.cursor.line + 1;
                 let col = ed.cursor.col + 1;
                 let dirty = ed.is_dirty;
-                let theme_name = self.app.settings.theme.name();
                 ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new(self.app.status_message.as_str()).font(small()).color(tc.fg));
+                    ui.spacing_mut().item_spacing.x = 16.0;
+                    // Left: branch + status
+                    if let Some(ref gs) = self.app.git_status {
+                        if gs.is_repo {
+                            ui.label(RichText::new(format!("⎇ {}", gs.branch)).font(sf.clone()).color(status_accent));
+                        }
+                    }
+                    if dirty {
+                        ui.label(RichText::new("● Modified").font(sf.clone()).color(
+                            if dark { tc.orange } else { Color32::from_rgb(255, 220, 150) }
+                        ));
+                    }
+                    let err_count = ed.diagnostics.len();
+                    if err_count > 0 {
+                        ui.label(RichText::new(format!("⚠ {}", err_count)).font(sf.clone()).color(
+                            if dark { tc.red } else { Color32::from_rgb(255, 180, 180) }
+                        ));
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 12.0;
+                        ui.spacing_mut().item_spacing.x = 16.0;
+                        // Right side items (rendered right-to-left)
+                        let theme_name = self.app.settings.theme.name();
                         let theme_btn = ui.add(egui::Button::new(
-                            RichText::new(format!("🎨 {}", theme_name)).font(small()).color(tc.fg)
+                            RichText::new(theme_name).font(sf.clone()).color(status_fg)
                         ).frame(false));
                         if theme_btn.clicked() {
                             let themes = Theme::ALL;
@@ -223,21 +278,15 @@ impl CodeEditorApp {
                             self.app.settings.save();
                         }
                         theme_btn.on_hover_text("Click to switch theme");
-                        if dirty {
-                            ui.label(RichText::new("● Modified").font(small()).color(tc.orange));
-                        }
-                        let err_count = ed.diagnostics.len();
-                        if err_count > 0 {
-                            ui.label(RichText::new(format!("⚠ {}", err_count)).font(small()).color(Color32::from_rgb(247, 118, 142)));
-                        }
+
+                        ui.label(RichText::new("UTF-8").font(sf.clone()).color(status_fg));
+                        ui.label(RichText::new(lang).font(sf.clone()).color(status_fg));
+                        ui.label(RichText::new(format!("Ln {}, Col {}", line, col)).font(sf.clone()).color(status_accent));
                         if self.app.auto_save_enabled {
-                            ui.label(RichText::new("Auto-Save").font(FontId::monospace(10.0)).color(tc.green));
+                            ui.label(RichText::new("Auto-Save").font(sf.clone()).color(
+                                if dark { tc.green } else { Color32::from_rgb(180, 255, 180) }
+                            ));
                         }
-                        let font_size = self.app.settings.font_size;
-                        ui.label(RichText::new(format!("{}px", font_size as u32)).font(small()).color(tc.fg_dim));
-                        ui.label(RichText::new(lang).font(small()).color(tc.fg_dim));
-                        ui.label(RichText::new(format!("Ln {}, Col {}", line, col)).font(small()).color(tc.fg));
-                        ui.label(RichText::new("UTF-8").font(small()).color(tc.fg_dim));
                     });
                 });
             });

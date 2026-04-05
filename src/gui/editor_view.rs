@@ -647,12 +647,12 @@ impl CodeEditorApp {
             if self.app.show_minimap && lc > 1 {
                 self.render_minimap(&painter, rect, dark, lc, vis, so, ed, &mut minimap_new_scroll, ctx);
             } else if lc > vis {
-                // Simple scrollbar
-                let sb_h = (vis as f32 / lc as f32 * rect.height()).max(20.0);
+                // Scrollbar (wider, more visible)
+                let sb_h = (vis as f32 / lc as f32 * rect.height()).max(24.0);
                 let sb_y = rect.min.y + (so as f32 / lc as f32 * rect.height());
                 painter.rect_filled(
-                    Rect::from_min_size(Pos2::new(rect.max.x - 6.0, sb_y), Vec2::new(4.0, sb_h)),
-                    Rounding::same(2), if dark { Color32::from_rgba_premultiplied(122, 162, 247, 60) } else { Color32::from_rgba_premultiplied(0, 0, 0, 40) },
+                    Rect::from_min_size(Pos2::new(rect.max.x - 8.0, sb_y), Vec2::new(6.0, sb_h)),
+                    Rounding::same(3), if dark { Color32::from_rgba_premultiplied(122, 162, 247, 90) } else { Color32::from_rgba_premultiplied(0, 0, 0, 60) },
                 );
             }
 
@@ -750,11 +750,13 @@ impl CodeEditorApp {
         let mut remove_project: Option<String> = None;
 
         ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.12);
-            ui.label(RichText::new("Code Editor").font(FontId::monospace(28.0)).color(self.tc.accent));
-            ui.add_space(8.0);
-            ui.label(RichText::new("Lightweight • Fast • Native").font(FontId::monospace(14.0)).color(self.tc.gutter_fg));
-            ui.add_space(24.0);
+            ui.add_space(ui.available_height() * 0.10);
+            ui.label(RichText::new("Code Editor").font(FontId::monospace(32.0)).color(self.tc.accent));
+            ui.add_space(6.0);
+            ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).font(FontId::monospace(12.0)).color(self.tc.fg_dim));
+            ui.add_space(4.0);
+            ui.label(RichText::new("Lightweight  •  Fast  •  Native").font(FontId::monospace(14.0)).color(self.tc.gutter_fg));
+            ui.add_space(28.0);
 
             let btn_width = 220.0;
             let btn_height = 36.0;
@@ -877,29 +879,32 @@ impl CodeEditorApp {
             let rel = fp.strip_prefix(root).unwrap_or(fp).trim_start_matches('/');
             let parts: Vec<&str> = rel.split('/').collect();
             let dark = self.app.settings.theme != Theme::Light;
-            let bc_bg = if dark { Color32::from_rgb(37, 37, 37) } else { Color32::from_rgb(245, 245, 245) };
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), egui::Sense::hover());
+            let bc_bg = if dark { Color32::from_rgb(32, 33, 40) } else { Color32::from_rgb(240, 240, 242) };
+            let bc_h = 26.0;
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), bc_h), egui::Sense::hover());
             ui.painter().rect_filled(rect, Rounding::ZERO, bc_bg);
-            let mut x = rect.min.x + 12.0;
+            let text_y = rect.min.y + (bc_h - 12.0) / 2.0;
+            let mut x = rect.min.x + 14.0;
             for (i, part) in parts.iter().enumerate() {
                 if i > 0 {
                     let sep_r = ui.painter().text(
-                        Pos2::new(x, rect.min.y + 4.0), egui::Align2::LEFT_TOP,
-                        " › ", FontId::monospace(11.0), self.tc.fg_dim,
+                        Pos2::new(x, text_y), egui::Align2::LEFT_TOP,
+                        " › ", FontId::monospace(11.5), self.tc.fg_dim,
                     );
                     x += sep_r.width();
                 }
                 let is_last = i == parts.len() - 1;
                 let color = if is_last { self.tc.fg } else { self.tc.fg_dim };
                 let tr = ui.painter().text(
-                    Pos2::new(x, rect.min.y + 4.0), egui::Align2::LEFT_TOP,
-                    *part, FontId::monospace(11.0), color,
+                    Pos2::new(x, text_y), egui::Align2::LEFT_TOP,
+                    *part, FontId::monospace(11.5), color,
                 );
                 x += tr.width();
             }
+            // Subtle bottom border
             ui.painter().line_segment(
-                [Pos2::new(rect.min.x, rect.max.y), Pos2::new(rect.max.x, rect.max.y)],
-                Stroke::new(1.0, self.tc.border),
+                [Pos2::new(rect.min.x, rect.max.y - 0.5), Pos2::new(rect.max.x, rect.max.y - 0.5)],
+                Stroke::new(0.5, self.tc.border),
             );
         }
     }

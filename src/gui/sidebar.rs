@@ -15,18 +15,27 @@ impl CodeEditorApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
+                    let dark = self.app.settings.theme != Theme::Light;
                     for (label, tab) in [("  Files  ", SidebarTab::Files), ("  Git  ", SidebarTab::Git), ("  Search  ", SidebarTab::Search)] {
                         let active = self.app.sidebar_tab == tab;
                         let c = if active { self.tc.accent } else { self.tc.fg_dim };
                         let btn = egui::Button::new(RichText::new(label).font(small()).color(c))
                             .fill(Color32::TRANSPARENT).rounding(Rounding::ZERO).stroke(Stroke::NONE);
                         let resp = ui.add(btn);
+                        // Hover background
+                        if resp.hovered() && !active {
+                            ui.painter().rect_filled(resp.rect, Rounding::same(3),
+                                if dark { Color32::from_white_alpha(8) } else { Color32::from_black_alpha(8) });
+                        }
                         if resp.clicked() { self.app.sidebar_tab = tab; }
                         if active {
                             let rect = resp.rect;
-                            ui.painter().line_segment(
-                                [Pos2::new(rect.min.x + 4.0, rect.max.y), Pos2::new(rect.max.x - 4.0, rect.max.y)],
-                                Stroke::new(2.0, self.tc.accent),
+                            ui.painter().rect_filled(
+                                Rect::from_min_size(
+                                    Pos2::new(rect.min.x + 4.0, rect.max.y - 2.0),
+                                    Vec2::new(rect.width() - 8.0, 2.0),
+                                ),
+                                Rounding::same(1), self.tc.accent,
                             );
                         }
                     }
