@@ -122,11 +122,16 @@ impl eframe::App for CodeEditorApp {
         self.render_overlays(ctx);
         // Auto-save tick
         self.app.tick();
-        // Compute git diff for active editor periodically
+        // Compute git diff for active editor — throttled to once per second
         {
             let ed = &mut self.app.editors[self.app.active_editor];
             if ed.is_dirty && ed.original_content.is_some() {
-                ed.compute_line_diff();
+                let should_diff = ed.last_edit_time
+                    .map(|t| t.elapsed().as_millis() > 1000)
+                    .unwrap_or(true);
+                if should_diff && !ed.line_diff.is_empty() || ed.line_diff.is_empty() {
+                    ed.compute_line_diff();
+                }
             }
         }
         // Execute deferred actions (file dialogs need to run after rendering)
@@ -163,7 +168,17 @@ impl eframe::App for CodeEditorApp {
                 self.app.git_rx = None;
             }
         }
-        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        // Only repaint frequently when needed (async ops pending, auto-save)
+        let needs_frequent = self.app.search_rx.is_some()
+            || self.app.git_rx.is_some()
+            || self.app.folder_picker_rx.is_some()
+            || self.app.last_search_trigger.is_some()
+            || self.drag_source.is_some();
+        if needs_frequent {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(2000));
+        }
     }
 }
 

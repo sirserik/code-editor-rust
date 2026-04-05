@@ -119,14 +119,11 @@ impl CodeEditorApp {
             let lh = ui.fonts(|f| f.row_height(&font)) + LINE_SPACING;
             let show_ln = self.app.settings.show_line_numbers;
 
-            // Recompute fold ranges when file is opened or after edits
+            // Recompute fold ranges — only when content actually changed
             {
                 let ed = &mut self.app.editors[self.app.active_editor];
-                if ed.fold_ranges.is_empty() || ed.is_dirty {
+                if ed.fold_ranges.is_empty() || ed.diagnostics_dirty {
                     ed.compute_fold_ranges();
-                    // Mark syntax highlighting dirty from cursor line
-                    let cur_line = ed.cursor.line;
-                    ed.invalidate_highlights_from(cur_line.saturating_sub(1));
                 }
             }
 
@@ -141,29 +138,29 @@ impl CodeEditorApp {
                 }
             }
 
-            // Update syntax highlight cache (Scintilla-style incremental)
+            // Update syntax highlight cache — only for visible lines + small margin
             {
                 let ed = &mut self.app.editors[self.app.active_editor];
                 let lang = ed.file_path.as_ref().map(|p| syntax::detect_language(p).to_string()).unwrap_or("text".into());
                 let lc = ed.line_count();
-                let need_full = ed.highlight_cache_lang != lang || ed.highlight_cache.is_empty();
-                if need_full {
+                let lang_changed = ed.highlight_cache_lang != lang;
+                if lang_changed {
                     ed.highlight_cache.clear();
-                    ed.highlight_cache.resize(lc, Vec::new());
-                    for li in 0..lc {
-                        let line = ed.buffer.get_line(li);
-                        ed.highlight_cache[li] = syntax::highlight_line(&line, &lang);
-                    }
                     ed.highlight_cache_lang = lang;
-                    ed.highlight_dirty_from = None;
-                } else if let Some(dirty_from) = ed.highlight_dirty_from.take() {
-                    // Resize cache if lines changed
-                    ed.highlight_cache.resize(lc, Vec::new());
-                    // Re-highlight from dirty line to end of visible area + margin
-                    let dirty_to = (dirty_from + ed.viewport_height + 50).min(lc);
+                }
+                // Ensure cache is right size
+                ed.highlight_cache.resize(lc, Vec::new());
+                // Only highlight visible range + margin (lazy)
+                let vis_start = ed.scroll_offset.saturating_sub(5);
+                let vis_end = (ed.scroll_offset + ed.viewport_height + 10).min(lc);
+                let needs_rehighlight = lang_changed || ed.highlight_dirty_from.is_some();
+                if needs_rehighlight {
+                    let dirty_from = ed.highlight_dirty_from.take().unwrap_or(vis_start).min(vis_start);
+                    let dirty_to = vis_end;
+                    let cache_lang = ed.highlight_cache_lang.clone();
                     for li in dirty_from..dirty_to {
                         let line = ed.buffer.get_line(li);
-                        ed.highlight_cache[li] = syntax::highlight_line(&line, &ed.highlight_cache_lang.clone());
+                        ed.highlight_cache[li] = syntax::highlight_line(&line, &cache_lang);
                     }
                 }
             }
@@ -211,6 +208,7 @@ impl CodeEditorApp {
                             ed.save_undo_snapshot();
                             // Typing replaces selection
                             ed.delete_selection_text();
+                            let edit_line = ed.cursor.line;
                             for c in text.chars() {
                                 ed.insert_char(c);
                                 if let Some(cc) = match c {
@@ -223,6 +221,7 @@ impl CodeEditorApp {
                                 }
                             }
                             ed.scroll_into_view();
+                            ed.invalidate_highlights_from(edit_line);
                             self.app.trigger_autocomplete();
                         }
                         egui::Event::Key { key, pressed: true, modifiers, .. } => {

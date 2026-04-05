@@ -665,12 +665,17 @@ impl Editor {
         };
         let orig_lines: Vec<&str> = original.lines().collect();
         let lc = self.buffer.line_count();
-        for li in 0..lc {
-            let current = self.buffer.get_line(li);
+        // Only diff visible range + margin to avoid O(n) per frame
+        let start = self.scroll_offset.saturating_sub(5);
+        let end = (self.scroll_offset + self.viewport_height + 10).min(lc);
+        for li in start..end {
             if li >= orig_lines.len() {
                 self.line_diff.insert(li, LineDiffStatus::Added);
-            } else if current != orig_lines[li] {
-                self.line_diff.insert(li, LineDiffStatus::Modified);
+            } else {
+                let current = self.buffer.get_line(li);
+                if current != orig_lines[li] {
+                    self.line_diff.insert(li, LineDiffStatus::Modified);
+                }
             }
         }
     }
