@@ -128,6 +128,9 @@ pub struct App {
     // File watcher
     pub file_watcher_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub _file_watcher: Option<notify::RecommendedWatcher>,
+
+    // Async file tree loading (Zed: BackgroundScanner)
+    pub file_tree_rx: Option<std::sync::mpsc::Receiver<crate::file_tree::FileEntry>>,
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +223,7 @@ impl App {
             last_search_trigger: None,
             file_watcher_rx: None,
             _file_watcher: None,
+            file_tree_rx: None,
         }
     }
 
@@ -260,8 +264,9 @@ impl App {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or(path.clone());
         self.status_message = format!("Opening: {}...", name);
-        self.file_tree.load(&path);
-        self.status_message = format!("Opened: {}", name);
+        // Zed-style: async background scan — UI stays responsive
+        self.file_tree.root_path = Some(path.clone());
+        self.file_tree_rx = Some(self.file_tree.load_async(&path));
         // Save to recent projects
         self.settings.add_recent_project(&path);
         // Start file watcher

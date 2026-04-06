@@ -215,6 +215,21 @@ impl eframe::App for CodeEditorApp {
             self.dirty = true;
         }
 
+        // Poll async file tree scan (Zed: BackgroundScanner result)
+        if let Some(ref rx) = self.app.file_tree_rx {
+            if let Ok(root) = rx.try_recv() {
+                self.app.file_tree.root = Some(root);
+                self.app.file_tree.flatten();
+                let name = self.app.file_tree.root_path.as_ref()
+                    .and_then(|p| std::path::Path::new(p).file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.app.status_message = format!("Opened: {}", name);
+                self.app.file_tree_rx = None;
+                self.dirty = true;
+            }
+        }
+
         // Poll async results
         if let Some(ref rx) = self.app.folder_picker_rx {
             if let Ok(path) = rx.try_recv() {
@@ -254,6 +269,7 @@ impl eframe::App for CodeEditorApp {
         let has_pending_async = self.app.search_rx.is_some()
             || self.app.git_rx.is_some()
             || self.app.folder_picker_rx.is_some()
+            || self.app.file_tree_rx.is_some()
             || self.app.last_search_trigger.is_some()
             || self.drag_source.is_some();
 
