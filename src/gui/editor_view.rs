@@ -763,86 +763,121 @@ impl CodeEditorApp {
         let dark = self.app.settings.theme != Theme::Light;
         let mut open_project: Option<String> = None;
         let mut remove_project: Option<String> = None;
+        let card_bg = if dark { Color32::from_rgb(50, 54, 62) } else { Color32::from_rgb(245, 246, 248) };
+        let card_border = if dark { Color32::from_rgb(65, 70, 80) } else { Color32::from_rgb(215, 218, 222) };
+        let card_hover = if dark { Color32::from_rgb(58, 63, 72) } else { Color32::from_rgb(235, 237, 240) };
 
-        ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.10);
-            ui.label(RichText::new("Code Editor").font(FontId::monospace(32.0)).color(self.tc.accent));
-            ui.add_space(6.0);
-            ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).font(FontId::monospace(12.0)).color(self.tc.fg_dim));
-            ui.add_space(4.0);
-            ui.label(RichText::new("Lightweight  •  Fast  •  Native").font(FontId::monospace(14.0)).color(self.tc.gutter_fg));
-            ui.add_space(28.0);
+        let avail_w = ui.available_width();
+        let content_w = 520.0_f32.min(avail_w - 60.0);
+        let side_pad = (avail_w - content_w) / 2.0;
 
-            let btn_width = 240.0;
-            let btn_height = 40.0;
-            let btn_bg = if dark { Color32::from_rgb(55, 58, 62) } else { Color32::from_rgb(240, 242, 245) };
-            let btn_text = self.tc.accent;
-            let btn_border = if dark { Color32::from_rgb(80, 85, 92) } else { Color32::from_rgb(200, 202, 206) };
-            if ui.add_sized([btn_width, btn_height],
-                egui::Button::new(RichText::new("  Open Folder…  ").font(FontId::monospace(14.0)).color(btn_text))
-                    .fill(btn_bg).rounding(Rounding::same(8))
-                    .stroke(Stroke::new(1.0, btn_border))
-            ).clicked() {
-                self.app.pending_action = Some(PaletteAction::OpenFolder);
-            }
-            ui.add_space(8.0);
-            if ui.add_sized([btn_width, btn_height],
-                egui::Button::new(RichText::new("  Open File…  ").font(FontId::monospace(14.0)).color(btn_text))
-                    .fill(btn_bg).rounding(Rounding::same(8))
-                    .stroke(Stroke::new(1.0, btn_border))
-            ).clicked() {
-                self.app.pending_action = Some(PaletteAction::OpenFile);
-            }
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(ui.available_height() * 0.06);
 
-            // Recent Projects
+            // ── Header ──
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("Code Editor").font(FontId::monospace(36.0)).color(self.tc.accent));
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("v{}  •  Built with Rust", env!("CARGO_PKG_VERSION")))
+                    .font(FontId::monospace(12.0)).color(self.tc.fg_dim));
+            });
+            ui.add_space(32.0);
+
+            // ── Action buttons (two columns) ──
+            ui.horizontal(|ui| {
+                ui.add_space(side_pad);
+                let half_w = (content_w - 12.0) / 2.0;
+
+                // Open Folder card
+                let (r1, resp1) = ui.allocate_exact_size(Vec2::new(half_w, 70.0), egui::Sense::click());
+                let h1 = resp1.hovered();
+                ui.painter().rect_filled(r1, Rounding::same(10), if h1 { card_hover } else { card_bg });
+                ui.painter().rect_stroke(r1, Rounding::same(10), Stroke::new(1.0, card_border), egui::StrokeKind::Outside);
+                ui.painter().text(Pos2::new(r1.min.x + 20.0, r1.min.y + 16.0), egui::Align2::LEFT_TOP,
+                    "📂", FontId::monospace(20.0), self.tc.fg);
+                ui.painter().text(Pos2::new(r1.min.x + 50.0, r1.min.y + 16.0), egui::Align2::LEFT_TOP,
+                    "Open Folder", FontId::monospace(14.0), if h1 { self.tc.accent } else { self.tc.fg });
+                ui.painter().text(Pos2::new(r1.min.x + 50.0, r1.min.y + 38.0), egui::Align2::LEFT_TOP,
+                    "⌘O", FontId::monospace(11.0), self.tc.fg_dim);
+                if resp1.clicked() { self.app.pending_action = Some(PaletteAction::OpenFolder); }
+
+                ui.add_space(12.0);
+
+                // Open File card
+                let (r2, resp2) = ui.allocate_exact_size(Vec2::new(half_w, 70.0), egui::Sense::click());
+                let h2 = resp2.hovered();
+                ui.painter().rect_filled(r2, Rounding::same(10), if h2 { card_hover } else { card_bg });
+                ui.painter().rect_stroke(r2, Rounding::same(10), Stroke::new(1.0, card_border), egui::StrokeKind::Outside);
+                ui.painter().text(Pos2::new(r2.min.x + 20.0, r2.min.y + 16.0), egui::Align2::LEFT_TOP,
+                    "📄", FontId::monospace(20.0), self.tc.fg);
+                ui.painter().text(Pos2::new(r2.min.x + 50.0, r2.min.y + 16.0), egui::Align2::LEFT_TOP,
+                    "Open File", FontId::monospace(14.0), if h2 { self.tc.accent } else { self.tc.fg });
+                ui.painter().text(Pos2::new(r2.min.x + 50.0, r2.min.y + 38.0), egui::Align2::LEFT_TOP,
+                    "⌘+Shift+O", FontId::monospace(11.0), self.tc.fg_dim);
+                if resp2.clicked() { self.app.pending_action = Some(PaletteAction::OpenFile); }
+            });
+
+            // ── Recent Projects ──
             let recent = self.app.settings.recent_projects.clone();
             if !recent.is_empty() {
                 ui.add_space(28.0);
-                ui.label(RichText::new("Recent Projects").font(FontId::monospace(13.0)).color(self.tc.fg_dim));
+                ui.horizontal(|ui| {
+                    ui.add_space(side_pad);
+                    ui.label(RichText::new("Recent Projects").font(FontId::monospace(14.0)).color(self.tc.fg));
+                });
                 ui.add_space(8.0);
 
-                let row_w = 380.0;
                 for project in &recent {
                     let exists = std::path::Path::new(&project.path).exists();
-                    let offset = (ui.available_width() - row_w) / 2.0;
 
                     ui.horizontal(|ui| {
-                        ui.add_space(offset.max(0.0));
-
-                        let row_color = if exists { self.tc.fg } else { self.tc.fg_dim };
-                        let hover_bg = if dark { Color32::from_rgb(45, 45, 55) } else { Color32::from_rgb(240, 240, 245) };
-
-                        // Two-line button: name + path
+                        ui.add_space(side_pad);
                         let (row_rect, row_resp) = ui.allocate_exact_size(
-                            Vec2::new(row_w, 42.0), egui::Sense::click(),
+                            Vec2::new(content_w, 50.0), egui::Sense::click(),
                         );
                         let hovered = row_resp.hovered();
                         let clicked = row_resp.clicked();
 
-                        // Background on hover
+                        // Background
                         if hovered {
-                            ui.painter().rect_filled(row_rect, Rounding::same(6), hover_bg);
+                            ui.painter().rect_filled(row_rect, Rounding::same(8), card_hover);
                         }
 
-                        // Project name
-                        let name_color = if hovered { self.tc.accent } else { row_color };
-                        let missing_label = if !exists { " (missing)" } else { "" };
+                        // Left accent bar
+                        if hovered {
+                            ui.painter().rect_filled(
+                                Rect::from_min_size(row_rect.min, Vec2::new(3.0, row_rect.height())),
+                                Rounding::same(2), self.tc.accent,
+                            );
+                        }
+
+                        // Folder icon
+                        let icon_color = if exists { self.tc.accent } else { self.tc.fg_dim };
                         ui.painter().text(
-                            Pos2::new(row_rect.min.x + 14.0, row_rect.min.y + 6.0),
-                            egui::Align2::LEFT_TOP,
-                            format!("{}{}", project.name, missing_label),
-                            FontId::monospace(13.0), name_color,
-                        );
-                        // Project path (dimmed, smaller)
-                        let short_path = project.path.replace("/Users/serik/", "~/");
-                        ui.painter().text(
-                            Pos2::new(row_rect.min.x + 14.0, row_rect.min.y + 24.0),
-                            egui::Align2::LEFT_TOP,
-                            &short_path,
-                            FontId::monospace(10.0), self.tc.fg_dim,
+                            Pos2::new(row_rect.min.x + 16.0, row_rect.min.y + 10.0),
+                            egui::Align2::LEFT_TOP, "📁", FontId::monospace(16.0), icon_color,
                         );
 
-                        // Right-click to remove
+                        // Name
+                        let name_color = if !exists { self.tc.fg_dim } else if hovered { self.tc.accent } else { self.tc.fg };
+                        let missing = if !exists { "  (not found)" } else { "" };
+                        ui.painter().text(
+                            Pos2::new(row_rect.min.x + 42.0, row_rect.min.y + 8.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("{}{}", project.name, missing),
+                            FontId::monospace(13.0), name_color,
+                        );
+
+                        // Path
+                        let home = dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                        let short = project.path.replace(&home, "~");
+                        ui.painter().text(
+                            Pos2::new(row_rect.min.x + 42.0, row_rect.min.y + 28.0),
+                            egui::Align2::LEFT_TOP, &short,
+                            FontId::monospace(10.5), self.tc.fg_dim,
+                        );
+
+                        // Context menu
                         row_resp.context_menu(|ui| {
                             if ui.button("Remove from Recent").clicked() {
                                 remove_project = Some(project.path.clone());
@@ -860,30 +895,71 @@ impl CodeEditorApp {
                             open_project = Some(project.path.clone());
                         }
                     });
+                    ui.add_space(2.0);
                 }
             }
 
-            ui.add_space(24.0);
-            ui.label(RichText::new("Keyboard Shortcuts").font(FontId::monospace(13.0)).color(self.tc.fg_dim));
+            // ── Shortcuts ──
+            ui.add_space(28.0);
+            ui.horizontal(|ui| {
+                ui.add_space(side_pad);
+                ui.label(RichText::new("Quick Start").font(FontId::monospace(14.0)).color(self.tc.fg));
+            });
             ui.add_space(8.0);
-            for (keys, desc) in [
-                ("⌘+Shift+P", "Command Palette"),
-                ("⌘+P", "Quick Open File"),
-                ("⌘+O", "Open Folder"),
-                ("⌘+S", "Save"),
-                ("⌘+B", "Toggle Sidebar"),
-            ] {
-                ui.horizontal(|ui| {
-                    let total = 260.0;
-                    let offset = (ui.available_width() - total) / 2.0;
-                    ui.add_space(offset);
-                    ui.label(RichText::new(format!("{:<16}", keys)).font(small()).color(self.tc.accent));
-                    ui.label(RichText::new(desc).font(small()).color(self.tc.fg_dim));
+
+            // Two-column shortcuts
+            ui.horizontal(|ui| {
+                ui.add_space(side_pad);
+                let col_w = (content_w - 16.0) / 2.0;
+
+                ui.vertical(|ui| {
+                    ui.set_width(col_w);
+                    for (key, desc) in [
+                        ("⌘+Shift+P", "Command Palette"),
+                        ("⌘+P", "Quick Open"),
+                        ("⌘+F", "Find in File"),
+                        ("⌘+Shift+F", "Find in Project"),
+                    ] {
+                        ui.horizontal(|ui| {
+                            // Key badge
+                            let badge_text = RichText::new(key).font(FontId::monospace(10.0)).color(self.tc.fg);
+                            let badge_bg = if dark { Color32::from_rgb(55, 58, 65) } else { Color32::from_rgb(230, 232, 236) };
+                            let badge_resp = ui.add(egui::Button::new(badge_text).fill(badge_bg)
+                                .rounding(Rounding::same(4)).stroke(Stroke::new(0.5, card_border))
+                                .min_size(Vec2::new(90.0, 20.0)));
+                            ui.label(RichText::new(desc).font(FontId::monospace(11.0)).color(self.tc.fg_dim));
+                        });
+                        ui.add_space(2.0);
+                    }
                 });
-            }
+
+                ui.add_space(16.0);
+
+                ui.vertical(|ui| {
+                    ui.set_width(col_w);
+                    for (key, desc) in [
+                        ("⌘+B", "Toggle Sidebar"),
+                        ("⌘+G", "Go to Line"),
+                        ("⌘+S", "Save"),
+                        ("⌘+Z / ⌘+Shift+Z", "Undo / Redo"),
+                    ] {
+                        ui.horizontal(|ui| {
+                            let badge_text = RichText::new(key).font(FontId::monospace(10.0)).color(self.tc.fg);
+                            let badge_bg = if dark { Color32::from_rgb(55, 58, 65) } else { Color32::from_rgb(230, 232, 236) };
+                            ui.add(egui::Button::new(badge_text).fill(badge_bg)
+                                .rounding(Rounding::same(4)).stroke(Stroke::new(0.5, card_border))
+                                .min_size(Vec2::new(90.0, 20.0)));
+                            ui.label(RichText::new(desc).font(FontId::monospace(11.0)).color(self.tc.fg_dim));
+                        });
+                        ui.add_space(2.0);
+                    }
+                });
+            });
+
+            ui.add_space(40.0);
         });
 
-        // Handle deferred actions outside borrow
+        // Deferred actions
         if let Some(path) = open_project {
             self.app.open_folder(path);
         }
