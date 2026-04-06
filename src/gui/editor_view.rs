@@ -515,7 +515,8 @@ impl CodeEditorApp {
 
                 let line = ed.buffer.get_line(li);
                 let hls = if li < ed.highlight_cache.len() { &ed.highlight_cache[li] } else { &[] as &[syntax::HighlightSpan] };
-                let chars: Vec<char> = line.chars().collect();
+                // Zed: MAX_LINE_LEN = 1024 — don't render extremely long lines
+                let chars: Vec<char> = line.chars().take(MAX_LINE_LEN).collect();
                 let xs = rect.min.x + gw;
 
                 // Selection highlight
@@ -632,7 +633,7 @@ impl CodeEditorApp {
                 if let Some(row) = cursor_row {
                     let cy = rect.min.y + row as f32 * lh;
                     let cx = rect.min.x + gw + ed.cursor.col as f32 * cw;
-                    let blink = (ui.input(|i| i.time) * 2.0) as u32 % 2 == 0;
+                    let blink = (ui.input(|i| i.time) * 1000.0) as u64 % (CURSOR_BLINK_INTERVAL_MS * 2) < CURSOR_BLINK_INTERVAL_MS;
                     if blink && cy < rect.max.y {
                         painter.rect_filled(
                             Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(2.0, lh)),
@@ -649,9 +650,15 @@ impl CodeEditorApp {
                 // Scrollbar (wider, more visible)
                 let sb_h = (vis as f32 / lc as f32 * rect.height()).max(24.0);
                 let sb_y = rect.min.y + (so as f32 / lc as f32 * rect.height());
+                // Track background
                 painter.rect_filled(
-                    Rect::from_min_size(Pos2::new(rect.max.x - 8.0, sb_y), Vec2::new(6.0, sb_h)),
-                    Rounding::same(3), if dark { Color32::from_rgba_premultiplied(122, 162, 247, 90) } else { Color32::from_rgba_premultiplied(0, 0, 0, 60) },
+                    Rect::from_min_size(Pos2::new(rect.max.x - SCROLLBAR_WIDTH, rect.min.y), Vec2::new(SCROLLBAR_WIDTH, rect.height())),
+                    Rounding::ZERO, if dark { Color32::from_rgba_premultiplied(30, 33, 40, 80) } else { Color32::from_rgba_premultiplied(0, 0, 0, 10) },
+                );
+                // Thumb
+                painter.rect_filled(
+                    Rect::from_min_size(Pos2::new(rect.max.x - SCROLLBAR_WIDTH + 2.0, sb_y), Vec2::new(SCROLLBAR_WIDTH - 4.0, sb_h)),
+                    Rounding::same(4), if dark { Color32::from_rgba_premultiplied(150, 160, 180, 100) } else { Color32::from_rgba_premultiplied(0, 0, 0, 60) },
                 );
             }
 
@@ -662,7 +669,7 @@ impl CodeEditorApp {
 
             // Extra cursors
             if self.app.focus == Focus::Editor {
-                let blink = (ui.input(|i| i.time) * 2.0) as u32 % 2 == 0;
+                let blink = (ui.input(|i| i.time) * 1000.0) as u64 % (CURSOR_BLINK_INTERVAL_MS * 2) < CURSOR_BLINK_INTERVAL_MS;
                 if blink {
                     for ec in &ed.extra_cursors {
                         if let Some(row) = vis_lines.iter().position(|&l| l == ec.line) {

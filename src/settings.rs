@@ -91,20 +91,20 @@ pub struct ThemeColors {
 impl Theme {
     pub fn colors(&self) -> ThemeColors {
         match self {
-            // JetBrains Darcula — warm tint (Zed-inspired HSL palette, not pure gray)
+            // Darcula — Zed One Dark inspired palette
             Theme::TokyoNight => ThemeColors {
-                bg: Color32::from_rgb(50, 50, 55),              // Slight blue tint
-                sidebar_bg: Color32::from_rgb(58, 60, 66),      // Lighter sidebar
-                status_bg: Color32::from_rgb(58, 60, 66),       // Status bar
-                tab_bar_bg: Color32::from_rgb(46, 47, 52),      // Darker tab strip
-                fg: Color32::from_rgb(212, 214, 220),           // Bright with cool tint
-                fg_dim: Color32::from_rgb(140, 144, 155),       // Readable secondary
-                gutter_fg: Color32::from_rgb(100, 104, 115),    // Line numbers
-                accent: Color32::from_rgb(100, 140, 210),       // Bright blue
-                selection_bg: Color32::from_rgb(45, 80, 145),   // Visible selection
-                current_line_bg: Color32::from_rgb(55, 56, 62), // Subtle highlight
-                cursor_color: Color32::from_rgb(220, 222, 228), // Bright cursor
-                border: Color32::from_rgb(68, 70, 78),          // Visible with tint
+                bg: Color32::from_rgb(40, 44, 51),              // #282c33
+                sidebar_bg: Color32::from_rgb(59, 65, 77),      // #3b414d
+                status_bg: Color32::from_rgb(59, 65, 77),       // #3b414d
+                tab_bar_bg: Color32::from_rgb(47, 52, 62),      // #2f343e
+                fg: Color32::from_rgb(208, 212, 218),           // #d0d4da
+                fg_dim: Color32::from_rgb(148, 155, 168),       // muted text
+                gutter_fg: Color32::from_rgb(78, 90, 95),       // #4e5a5f
+                accent: Color32::from_rgb(116, 173, 232),       // #74ade8
+                selection_bg: Color32::from_rgba_premultiplied(116, 173, 232, 61), // #74ade8 at 24%
+                current_line_bg: Color32::from_rgba_premultiplied(47, 52, 62, 191), // #2f343e at 75%
+                cursor_color: Color32::from_rgb(116, 173, 232), // accent as cursor
+                border: Color32::from_rgb(70, 75, 87),          // #464b57
                 bracket_match_bg: Color32::from_rgb(58, 87, 110),
                 red: Color32::from_rgb(255, 107, 104),
                 green: Color32::from_rgb(106, 171, 115),

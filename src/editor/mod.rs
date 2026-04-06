@@ -397,11 +397,13 @@ impl Editor {
     }
 
     pub fn scroll_into_view(&mut self) {
-        if self.cursor.line < self.scroll_offset {
-            self.scroll_offset = self.cursor.line;
+        // Zed-style autoscroll margin: keep cursor away from edges
+        let margin = 3.min(self.viewport_height / 3);
+        if self.cursor.line < self.scroll_offset + margin {
+            self.scroll_offset = self.cursor.line.saturating_sub(margin);
         }
-        if self.cursor.line >= self.scroll_offset + self.viewport_height {
-            self.scroll_offset = self.cursor.line - self.viewport_height + 1;
+        if self.cursor.line + margin >= self.scroll_offset + self.viewport_height {
+            self.scroll_offset = (self.cursor.line + margin).saturating_sub(self.viewport_height) + 1;
         }
     }
 

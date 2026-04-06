@@ -111,7 +111,9 @@ impl CodeEditorApp {
                 };
 
                 let drop_bg = if dark { Color32::from_rgb(35, 50, 80) } else { Color32::from_rgb(210, 225, 245) };
-                let bg = if is_drop { drop_bg } else if sel { self.tc.selection_bg } else { Color32::TRANSPARENT };
+                let hover_bg = if dark { Color32::from_rgb(54, 60, 70) } else { Color32::from_rgb(232, 235, 240) }; // Zed: #363c46
+                let is_hovered = row_resp.hovered() && !is_drop && !sel;
+                let bg = if is_drop { drop_bg } else if sel { self.tc.selection_bg } else if is_hovered { hover_bg } else { Color32::TRANSPARENT };
 
                 if bg != Color32::TRANSPARENT {
                     ui.painter().rect_filled(row_rect, Rounding::ZERO, bg);

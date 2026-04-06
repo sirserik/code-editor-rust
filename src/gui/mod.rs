@@ -20,6 +20,9 @@ pub struct CodeEditorApp {
 
 pub(crate) const DEFAULT_FONT_SIZE: f32 = 14.0;
 pub(crate) const LINE_SPACING: f32 = 4.0;
+pub(crate) const SCROLLBAR_WIDTH: f32 = 12.0;        // Zed: 15px, we use 12 for egui
+pub(crate) const CURSOR_BLINK_INTERVAL_MS: u64 = 500; // Zed: 500ms
+pub(crate) const MAX_LINE_LEN: usize = 1024;           // Zed: 1024 chars per line max render
 
 pub(crate) fn mono() -> FontId { FontId::monospace(DEFAULT_FONT_SIZE) }
 pub(crate) fn mono_sized(size: f32) -> FontId { FontId::monospace(size) }
@@ -182,8 +185,8 @@ impl eframe::App for CodeEditorApp {
         if has_async_work {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         } else if self.app.focus == Focus::Editor {
-            // Cursor blink — repaint every 500ms only when editor is focused
-            ctx.request_repaint_after(std::time::Duration::from_millis(530));
+            // Cursor blink — Zed uses 500ms interval
+            ctx.request_repaint_after(std::time::Duration::from_millis(CURSOR_BLINK_INTERVAL_MS));
         }
         // Otherwise: no repaint requested — egui repaints only on user input (mouse/keyboard)
     }
