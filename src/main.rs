@@ -7,6 +7,7 @@ mod search;
 mod settings;
 mod snippets;
 mod syntax;
+mod templates;
 mod terminal;
 
 use app::App;

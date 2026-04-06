@@ -225,8 +225,20 @@ impl CodeEditorApp {
                         if enter_pressed && !self.app.dialog_input.is_empty() {
                             let path = format!("{}/{}", self.app.dialog_context_path, self.app.dialog_input);
                             if is_file {
-                                match self.app.file_tree.create_file(&path) {
-                                    Ok(()) => { self.app.open_file(&path); self.app.status_message = format!("Created: {}", self.app.dialog_input); }
+                                // Write template content based on extension
+                                let template = crate::templates::get_template(&self.app.dialog_input);
+                                let content = template.unwrap_or("");
+                                // Create parent dirs if needed
+                                if let Some(parent) = std::path::Path::new(&path).parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                }
+                                match std::fs::write(&path, content) {
+                                    Ok(()) => {
+                                        self.app.file_tree.refresh();
+                                        self.app.open_file(&path);
+                                        let tmpl_note = if !content.is_empty() { " (with template)" } else { "" };
+                                        self.app.status_message = format!("Created: {}{}", self.app.dialog_input, tmpl_note);
+                                    }
                                     Err(e) => { self.app.status_message = format!("Error: {}", e); }
                                 }
                             } else {
