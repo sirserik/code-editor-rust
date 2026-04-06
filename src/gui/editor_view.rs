@@ -119,11 +119,20 @@ impl CodeEditorApp {
             let lh = ui.fonts(|f| f.row_height(&font)) + LINE_SPACING;
             let show_ln = self.app.settings.show_line_numbers;
 
-            // Recompute fold ranges — only when content actually changed
+            // Recompute fold ranges — only on first open (empty) and debounced after edits
             {
                 let ed = &mut self.app.editors[self.app.active_editor];
-                if ed.fold_ranges.is_empty() || ed.diagnostics_dirty {
+                if ed.fold_ranges.is_empty() && !ed.is_dirty {
+                    // First open — compute once
                     ed.compute_fold_ranges();
+                } else if ed.diagnostics_dirty {
+                    // After edit — defer fold computation, it's expensive
+                    let should_recompute = ed.last_edit_time
+                        .map(|t| t.elapsed().as_millis() > 500)
+                        .unwrap_or(true);
+                    if should_recompute {
+                        ed.compute_fold_ranges();
+                    }
                 }
             }
 

@@ -16,6 +16,10 @@ pub struct CodeEditorApp {
     tc: ThemeColors,
     clipboard: Option<arboard::Clipboard>,
     last_title: String,
+    // Zed-style dirty tracking — only redraw when state changed
+    dirty: bool,
+    last_input_time: std::time::Instant,
+    last_frame_time: std::time::Instant,
 }
 
 pub(crate) const DEFAULT_FONT_SIZE: f32 = 14.0;
@@ -83,13 +87,33 @@ impl CodeEditorApp {
     pub fn new(app: App) -> Self {
         let tc = app.settings.theme.colors();
         let clipboard = arboard::Clipboard::new().ok();
-        Self { app, drag_source: None, drop_target: None, tc, clipboard, last_title: String::new() }
+        let now = std::time::Instant::now();
+        Self {
+            app, drag_source: None, drop_target: None, tc, clipboard,
+            last_title: String::new(),
+            dirty: true,
+            last_input_time: now,
+            last_frame_time: now,
+        }
     }
 }
 
 impl eframe::App for CodeEditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Refresh theme colors if changed
+        let now = std::time::Instant::now();
+
+        // ── Zed-style input rate tracking ──
+        // Detect if user is actively interacting
+        let has_input = ctx.input(|i| {
+            !i.events.is_empty() || i.pointer.any_down() || i.pointer.any_released()
+                || i.smooth_scroll_delta.length() > 0.0
+        });
+        if has_input {
+            self.last_input_time = now;
+            self.dirty = true;
+        }
+
+        // ── Theme refresh ──
         let new_tc = self.app.settings.theme.colors();
         if self.tc.bg != new_tc.bg {
             self.tc = new_tc;
@@ -102,22 +126,26 @@ impl eframe::App for CodeEditorApp {
             visuals.window_fill = self.tc.bg;
             visuals.faint_bg_color = self.tc.sidebar_bg;
             ctx.set_visuals(visuals);
+            self.dirty = true;
         }
-        // Update window title — only when changed
+
+        // ── Window title (only when changed) ──
         {
             let ed = &self.app.editors[self.app.active_editor];
             let name = ed.file_name();
-            let dirty = if ed.is_dirty { " ●" } else { "" };
+            let dirty_mark = if ed.is_dirty { " ●" } else { "" };
             let project = self.app.file_tree.root_path.as_ref()
                 .and_then(|p| std::path::Path::new(p).file_name())
                 .map(|n| format!(" — {}", n.to_string_lossy()))
                 .unwrap_or_default();
-            let title = format!("{}{}{} — Code Editor", name, dirty, project);
+            let title = format!("{}{}{} — Code Editor", name, dirty_mark, project);
             if title != self.last_title {
                 self.last_title = title.clone();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
             }
         }
+
+        // ── Render UI ──
         self.handle_keys(ctx);
         self.render_menu_bar(ctx);
         self.render_tabs(ctx);
@@ -126,69 +154,84 @@ impl eframe::App for CodeEditorApp {
         self.render_editor(ctx);
         self.render_drag_overlay(ctx);
         self.render_overlays(ctx);
-        // Auto-save tick & file watcher
+
+        // ── Background tasks (throttled) ──
         self.app.tick();
-        self.app.poll_file_watcher();
-        // Compute git diff for active editor — throttled to once per second
-        {
-            let ed = &mut self.app.editors[self.app.active_editor];
-            if ed.is_dirty && ed.original_content.is_some() {
-                let should_diff = ed.last_edit_time
-                    .map(|t| t.elapsed().as_millis() > 1000)
-                    .unwrap_or(true);
-                if should_diff && !ed.line_diff.is_empty() || ed.line_diff.is_empty() {
-                    ed.compute_line_diff();
-                }
+
+        // File watcher — Zed: 100ms debounce, we poll every 2s
+        if self.app.file_watcher_rx.is_some() {
+            let secs = now.duration_since(self.last_frame_time).as_secs();
+            if secs >= 2 {
+                self.app.poll_file_watcher();
             }
         }
-        // Execute deferred actions (file dialogs need to run after rendering)
+
+        // Git diff — only after 1s of inactivity
+        {
+            let idle_ms = now.duration_since(self.last_input_time).as_millis();
+            let ed = &mut self.app.editors[self.app.active_editor];
+            if ed.is_dirty && ed.original_content.is_some() && idle_ms > 1000 {
+                ed.compute_line_diff();
+            }
+        }
+
+        // Deferred actions
         if let Some(action) = self.app.pending_action.take() {
             self.app.execute_palette_action(action);
+            self.dirty = true;
         }
-        // Poll async folder picker result
+
+        // Poll async results
         if let Some(ref rx) = self.app.folder_picker_rx {
             if let Ok(path) = rx.try_recv() {
                 self.app.open_folder(path);
                 self.app.folder_picker_rx = None;
+                self.dirty = true;
             }
         }
-        // Poll async search results
         if let Some(ref rx) = self.app.search_rx {
             if let Ok((files, content)) = rx.try_recv() {
                 self.app.file_search_results = files;
                 self.app.global_search_results = content;
                 self.app.global_search_selected = 0;
                 self.app.search_rx = None;
+                self.dirty = true;
             }
         }
-        // Debounced global search trigger (150ms delay)
         if let Some(trigger_time) = self.app.last_search_trigger {
             if trigger_time.elapsed().as_millis() >= 150 {
                 self.app.last_search_trigger = None;
                 self.do_search();
             }
         }
-        // Poll async git status
         if let Some(ref rx) = self.app.git_rx {
             if let Ok(status) = rx.try_recv() {
                 self.app.git_status = Some(status);
                 self.app.git_rx = None;
+                self.dirty = true;
             }
         }
-        // Minimal repaint scheduling — ONLY when async work is pending
-        // Without this, egui sits idle and consumes 0% CPU
-        let has_async_work = self.app.search_rx.is_some()
+
+        self.last_frame_time = now;
+
+        // ── Zed-style repaint scheduling ──
+        // Key insight from Zed: only request repaint when actually needed
+        let idle_since = now.duration_since(self.last_input_time);
+        let has_pending_async = self.app.search_rx.is_some()
             || self.app.git_rx.is_some()
             || self.app.folder_picker_rx.is_some()
             || self.app.last_search_trigger.is_some()
             || self.drag_source.is_some();
-        if has_async_work {
+
+        if has_pending_async {
+            // Async work pending — poll at 10fps
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        } else if self.app.focus == Focus::Editor {
-            // Cursor blink — Zed uses 500ms interval
+        } else if idle_since.as_millis() < 1000 {
+            // Recently active — sustain cursor blink (Zed: sustain_duration = 1s)
             ctx.request_repaint_after(std::time::Duration::from_millis(CURSOR_BLINK_INTERVAL_MS));
         }
-        // Otherwise: no repaint requested — egui repaints only on user input (mouse/keyboard)
+        // After 1s idle: NO repaint requested. egui sleeps until next user input.
+        // This is the key to 0% CPU at idle — exactly like Zed.
     }
 }
 
