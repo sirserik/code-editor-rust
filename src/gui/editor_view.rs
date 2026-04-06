@@ -973,6 +973,7 @@ impl CodeEditorApp {
         let dark = resolved != Theme::Light;
         let mut open_project: Option<String> = None;
         let mut remove_project: Option<String> = None;
+        let mut clear_all_projects = false;
         let card_bg = if dark { Color32::from_rgb(50, 54, 62) } else { Color32::from_rgb(237, 239, 242) };
         let card_border = if dark { Color32::from_rgb(65, 70, 80) } else { Color32::from_rgb(208, 212, 218) };
         let card_hover = if dark { Color32::from_rgb(58, 63, 72) } else { Color32::from_rgb(225, 228, 232) };
@@ -1029,83 +1030,85 @@ impl CodeEditorApp {
 
             // ── Recent Projects ──
             let recent = self.app.settings.recent_projects.clone();
+            // Cache home dir once (not per-row per-frame)
+            let home_dir = dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            // clear_all_projects declared above ScrollArea scope
+
             if !recent.is_empty() {
                 ui.add_space(28.0);
                 ui.horizontal(|ui| {
                     ui.add_space(side_pad);
                     ui.label(RichText::new("Recent Projects").font(FontId::monospace(14.0)).color(self.tc.fg));
+                    ui.add_space(12.0);
+                    // Clear All button
+                    if ui.add(egui::Button::new(
+                        RichText::new("Clear All").font(FontId::monospace(10.0)).color(self.tc.fg_dim)
+                    ).fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() {
+                        clear_all_projects = true;
+                    }
                 });
                 ui.add_space(8.0);
 
                 for project in &recent {
-                    let exists = std::path::Path::new(&project.path).exists();
-
                     ui.horizontal(|ui| {
                         ui.add_space(side_pad);
                         let (row_rect, row_resp) = ui.allocate_exact_size(
-                            Vec2::new(content_w, 50.0), egui::Sense::click(),
+                            Vec2::new(content_w, 44.0), egui::Sense::click(),
                         );
                         let hovered = row_resp.hovered();
                         let clicked = row_resp.clicked();
 
-                        // Background
                         if hovered {
                             ui.painter().rect_filled(row_rect, Rounding::same(8), card_hover);
-                        }
-
-                        // Left accent bar
-                        if hovered {
+                            // Left accent bar
                             ui.painter().rect_filled(
                                 Rect::from_min_size(row_rect.min, Vec2::new(3.0, row_rect.height())),
                                 Rounding::same(2), self.tc.accent,
                             );
                         }
 
-                        // Folder icon
-                        let icon_color = if exists { self.tc.accent } else { self.tc.fg_dim };
-                        ui.painter().text(
-                            Pos2::new(row_rect.min.x + 16.0, row_rect.min.y + 10.0),
-                            egui::Align2::LEFT_TOP, "📁", FontId::monospace(16.0), icon_color,
-                        );
-
                         // Name
-                        let name_color = if !exists { self.tc.fg_dim } else if hovered { self.tc.accent } else { self.tc.fg };
-                        let missing = if !exists { "  (not found)" } else { "" };
+                        let name_color = if hovered { self.tc.accent } else { self.tc.fg };
                         ui.painter().text(
-                            Pos2::new(row_rect.min.x + 42.0, row_rect.min.y + 8.0),
+                            Pos2::new(row_rect.min.x + 14.0, row_rect.min.y + 6.0),
                             egui::Align2::LEFT_TOP,
-                            format!("{}{}", project.name, missing),
+                            &project.name,
                             FontId::monospace(13.0), name_color,
                         );
 
-                        // Path
-                        let home = dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-                        let short = project.path.replace(&home, "~");
+                        // Path (shortened)
+                        let short = project.path.replace(&home_dir, "~");
                         ui.painter().text(
-                            Pos2::new(row_rect.min.x + 42.0, row_rect.min.y + 28.0),
+                            Pos2::new(row_rect.min.x + 14.0, row_rect.min.y + 24.0),
                             egui::Align2::LEFT_TOP, &short,
                             FontId::monospace(10.5), self.tc.fg_dim,
                         );
 
-                        // Context menu
-                        row_resp.context_menu(|ui| {
-                            if ui.button("Remove from Recent").clicked() {
+                        // Delete button (visible on hover) — right side
+                        if hovered {
+                            let del_rect = Rect::from_min_size(
+                                Pos2::new(row_rect.max.x - 28.0, row_rect.min.y + 10.0),
+                                Vec2::new(22.0, 22.0),
+                            );
+                            let del_resp = ui.allocate_rect(del_rect, egui::Sense::click());
+                            ui.painter().text(del_rect.center(), egui::Align2::CENTER_CENTER,
+                                "×", FontId::monospace(14.0), self.tc.fg_dim);
+                            if del_resp.hovered() {
+                                ui.painter().rect_filled(del_rect, Rounding::same(3),
+                                    if dark { Color32::from_rgb(180, 50, 50) } else { Color32::from_rgb(220, 80, 80) });
+                                ui.painter().text(del_rect.center(), egui::Align2::CENTER_CENTER,
+                                    "×", FontId::monospace(14.0), Color32::WHITE);
+                            }
+                            if del_resp.clicked() {
                                 remove_project = Some(project.path.clone());
-                                ui.close_menu();
                             }
-                            if exists {
-                                if ui.button("Reveal in Finder").clicked() {
-                                    let _ = std::process::Command::new("open").arg(&project.path).spawn();
-                                    ui.close_menu();
-                                }
-                            }
-                        });
+                        }
 
-                        if clicked && exists {
+                        if clicked {
                             open_project = Some(project.path.clone());
                         }
                     });
-                    ui.add_space(2.0);
+                    ui.add_space(1.0);
                 }
             }
 
@@ -1175,6 +1178,10 @@ impl CodeEditorApp {
         }
         if let Some(path) = remove_project {
             self.app.settings.remove_recent_project(&path);
+        }
+        if clear_all_projects {
+            self.app.settings.recent_projects.clear();
+            self.app.settings.save();
         }
     }
 
