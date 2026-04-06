@@ -91,25 +91,25 @@ pub struct ThemeColors {
 impl Theme {
     pub fn colors(&self) -> ThemeColors {
         match self {
-            // JetBrains Darcula
+            // JetBrains Darcula — improved contrast
             Theme::TokyoNight => ThemeColors {
-                bg: Color32::from_rgb(43, 43, 43),              // Darcula editor bg
-                sidebar_bg: Color32::from_rgb(43, 43, 43),      // Same as editor — JB style
-                status_bg: Color32::from_rgb(60, 63, 65),       // Slightly lighter status
-                tab_bar_bg: Color32::from_rgb(49, 51, 53),      // Subtle tab strip
-                fg: Color32::from_rgb(187, 187, 187),           // Default text
-                fg_dim: Color32::from_rgb(128, 128, 128),       // Secondary text
-                gutter_fg: Color32::from_rgb(96, 99, 102),      // Line numbers
-                accent: Color32::from_rgb(75, 110, 175),        // JB Darcula link blue
-                selection_bg: Color32::from_rgb(33, 66, 131),   // Deep selection blue
-                current_line_bg: Color32::from_rgb(50, 50, 50), // Subtle current line
-                cursor_color: Color32::from_rgb(187, 187, 187),
-                border: Color32::from_rgb(50, 50, 50),          // Very subtle borders
+                bg: Color32::from_rgb(49, 51, 53),              // Slightly lighter editor bg
+                sidebar_bg: Color32::from_rgb(60, 63, 65),      // Lighter sidebar for separation
+                status_bg: Color32::from_rgb(60, 63, 65),       // Status bar
+                tab_bar_bg: Color32::from_rgb(49, 51, 53),      // Tab strip
+                fg: Color32::from_rgb(210, 210, 210),           // Brighter default text
+                fg_dim: Color32::from_rgb(150, 152, 155),       // Brighter secondary text
+                gutter_fg: Color32::from_rgb(110, 113, 116),    // Brighter line numbers
+                accent: Color32::from_rgb(88, 130, 195),        // Brighter blue accent
+                selection_bg: Color32::from_rgb(40, 75, 140),   // More visible selection
+                current_line_bg: Color32::from_rgb(50, 52, 54), // Subtle current line
+                cursor_color: Color32::from_rgb(220, 220, 220), // Bright cursor
+                border: Color32::from_rgb(70, 72, 75),          // Visible borders
                 bracket_match_bg: Color32::from_rgb(58, 87, 110),
                 red: Color32::from_rgb(255, 107, 104),
                 green: Color32::from_rgb(106, 171, 115),
                 orange: Color32::from_rgb(204, 147, 89),
-                fold_fg: Color32::from_rgb(96, 99, 102),
+                fold_fg: Color32::from_rgb(110, 113, 116),
                 bracket_colors: [
                     Color32::from_rgb(204, 147, 89),   // gold
                     Color32::from_rgb(179, 131, 191),   // purple

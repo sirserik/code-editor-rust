@@ -227,9 +227,9 @@ impl CodeEditorApp {
         let tc = self.tc;
         let dark = self.app.settings.theme != Theme::Light;
         let status_bg = if dark {
-            Color32::from_rgb(24, 24, 36)
+            tc.sidebar_bg // Use sidebar color for consistency
         } else {
-            Color32::from_rgb(0, 122, 204) // VS Code blue status bar for light theme
+            Color32::from_rgb(0, 122, 204) // VS Code blue for light theme
         };
         let status_fg = if dark { tc.fg_dim } else { Color32::WHITE };
         let status_accent = if dark { tc.fg } else { Color32::WHITE };

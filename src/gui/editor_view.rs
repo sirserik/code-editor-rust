@@ -757,22 +757,23 @@ impl CodeEditorApp {
             ui.label(RichText::new("Lightweight  •  Fast  •  Native").font(FontId::monospace(14.0)).color(self.tc.gutter_fg));
             ui.add_space(28.0);
 
-            let btn_width = 220.0;
-            let btn_height = 36.0;
-            let btn_bg = self.tc.sidebar_bg;
+            let btn_width = 240.0;
+            let btn_height = 40.0;
+            let btn_bg = if dark { Color32::from_rgb(55, 58, 62) } else { Color32::from_rgb(240, 242, 245) };
             let btn_text = self.tc.accent;
+            let btn_border = if dark { Color32::from_rgb(80, 85, 92) } else { Color32::from_rgb(200, 202, 206) };
             if ui.add_sized([btn_width, btn_height],
                 egui::Button::new(RichText::new("  Open Folder…  ").font(FontId::monospace(14.0)).color(btn_text))
-                    .fill(btn_bg).rounding(Rounding::same(6))
-                    .stroke(Stroke::new(1.0, self.tc.border))
+                    .fill(btn_bg).rounding(Rounding::same(8))
+                    .stroke(Stroke::new(1.0, btn_border))
             ).clicked() {
                 self.app.pending_action = Some(PaletteAction::OpenFolder);
             }
             ui.add_space(8.0);
             if ui.add_sized([btn_width, btn_height],
                 egui::Button::new(RichText::new("  Open File…  ").font(FontId::monospace(14.0)).color(btn_text))
-                    .fill(btn_bg).rounding(Rounding::same(6))
-                    .stroke(Stroke::new(1.0, self.tc.border))
+                    .fill(btn_bg).rounding(Rounding::same(8))
+                    .stroke(Stroke::new(1.0, btn_border))
             ).clicked() {
                 self.app.pending_action = Some(PaletteAction::OpenFile);
             }
@@ -795,23 +796,38 @@ impl CodeEditorApp {
                         let row_color = if exists { self.tc.fg } else { self.tc.fg_dim };
                         let hover_bg = if dark { Color32::from_rgb(45, 45, 55) } else { Color32::from_rgb(240, 240, 245) };
 
-                        let resp = ui.add_sized([row_w, 30.0],
-                            egui::Button::new(
-                                RichText::new(format!("  {}  {}", project.name,
-                                    if !exists { " (missing)" } else { "" }))
-                                    .font(FontId::monospace(12.0)).color(row_color)
-                            )
-                            .fill(Color32::TRANSPARENT)
-                            .rounding(Rounding::same(4))
-                            .stroke(Stroke::NONE)
+                        // Two-line button: name + path
+                        let (row_rect, row_resp) = ui.allocate_exact_size(
+                            Vec2::new(row_w, 42.0), egui::Sense::click(),
+                        );
+                        let hovered = row_resp.hovered();
+                        let clicked = row_resp.clicked();
+
+                        // Background on hover
+                        if hovered {
+                            ui.painter().rect_filled(row_rect, Rounding::same(6), hover_bg);
+                        }
+
+                        // Project name
+                        let name_color = if hovered { self.tc.accent } else { row_color };
+                        let missing_label = if !exists { " (missing)" } else { "" };
+                        ui.painter().text(
+                            Pos2::new(row_rect.min.x + 14.0, row_rect.min.y + 6.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("{}{}", project.name, missing_label),
+                            FontId::monospace(13.0), name_color,
+                        );
+                        // Project path (dimmed, smaller)
+                        let short_path = project.path.replace("/Users/serik/", "~/");
+                        ui.painter().text(
+                            Pos2::new(row_rect.min.x + 14.0, row_rect.min.y + 24.0),
+                            egui::Align2::LEFT_TOP,
+                            &short_path,
+                            FontId::monospace(10.0), self.tc.fg_dim,
                         );
 
-                        let hovered = resp.hovered();
-                        let clicked = resp.clicked();
-                        let r = resp.rect;
-
                         // Right-click to remove
-                        resp.context_menu(|ui| {
+                        row_resp.context_menu(|ui| {
                             if ui.button("Remove from Recent").clicked() {
                                 remove_project = Some(project.path.clone());
                                 ui.close_menu();
@@ -823,17 +839,6 @@ impl CodeEditorApp {
                                 }
                             }
                         });
-
-                        if hovered {
-                            ui.painter().rect_filled(r, Rounding::same(4), hover_bg);
-                            ui.painter().text(
-                                Pos2::new(r.min.x + 12.0, r.center().y - 6.0),
-                                egui::Align2::LEFT_TOP,
-                                &project.name,
-                                FontId::monospace(12.0),
-                                self.tc.accent,
-                            );
-                        }
 
                         if clicked && exists {
                             open_project = Some(project.path.clone());

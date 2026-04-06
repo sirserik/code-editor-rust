@@ -55,10 +55,16 @@ fn main() -> eframe::Result<()> {
             .insert(0, "JetBrainsMono".to_owned());
         cc.egui_ctx.set_fonts(fonts);
 
-        let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = egui::Color32::from_rgb(26, 27, 38);
-        visuals.window_fill = egui::Color32::from_rgb(26, 27, 38);
-        visuals.faint_bg_color = egui::Color32::from_rgb(22, 22, 30);
+        // Set initial visuals from loaded theme
+        let tc = app.settings.theme.colors();
+        let mut visuals = if app.settings.theme == crate::settings::Theme::Light {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        };
+        visuals.panel_fill = tc.bg;
+        visuals.window_fill = tc.bg;
+        visuals.faint_bg_color = tc.sidebar_bg;
         cc.egui_ctx.set_visuals(visuals);
         Ok(Box::new(gui::CodeEditorApp::new(app)))
     }))
