@@ -36,6 +36,7 @@ fn main() -> eframe::Result<()> {
             .with_min_inner_size([600.0, 400.0])
             .with_title("Code Editor"),
         renderer: eframe::Renderer::Glow,
+        vsync: true,
         ..Default::default()
     };
 

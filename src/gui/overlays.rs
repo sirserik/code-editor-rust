@@ -47,7 +47,8 @@ impl CodeEditorApp {
                 painter.galley(bg_rect.min + padding, galley, Color32::PLACEHOLDER);
             }
 
-            ctx.request_repaint();
+            // Repaint while dragging for smooth overlay movement
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
 

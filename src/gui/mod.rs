@@ -15,6 +15,7 @@ pub struct CodeEditorApp {
     drop_target: Option<(usize, String)>,
     tc: ThemeColors,
     clipboard: Option<arboard::Clipboard>,
+    last_title: String,
 }
 
 pub(crate) const DEFAULT_FONT_SIZE: f32 = 14.0;
@@ -79,7 +80,7 @@ impl CodeEditorApp {
     pub fn new(app: App) -> Self {
         let tc = app.settings.theme.colors();
         let clipboard = arboard::Clipboard::new().ok();
-        Self { app, drag_source: None, drop_target: None, tc, clipboard }
+        Self { app, drag_source: None, drop_target: None, tc, clipboard, last_title: String::new() }
     }
 }
 
@@ -99,7 +100,7 @@ impl eframe::App for CodeEditorApp {
             visuals.faint_bg_color = self.tc.sidebar_bg;
             ctx.set_visuals(visuals);
         }
-        // Update window title with current file name
+        // Update window title — only when changed
         {
             let ed = &self.app.editors[self.app.active_editor];
             let name = ed.file_name();
@@ -108,9 +109,11 @@ impl eframe::App for CodeEditorApp {
                 .and_then(|p| std::path::Path::new(p).file_name())
                 .map(|n| format!(" — {}", n.to_string_lossy()))
                 .unwrap_or_default();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-                format!("{}{}{} — Code Editor", name, dirty, project)
-            ));
+            let title = format!("{}{}{} — Code Editor", name, dirty, project);
+            if title != self.last_title {
+                self.last_title = title.clone();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+            }
         }
         self.handle_keys(ctx);
         self.render_menu_bar(ctx);
@@ -168,17 +171,20 @@ impl eframe::App for CodeEditorApp {
                 self.app.git_rx = None;
             }
         }
-        // Only repaint frequently when needed (async ops pending, auto-save)
-        let needs_frequent = self.app.search_rx.is_some()
+        // Minimal repaint scheduling — ONLY when async work is pending
+        // Without this, egui sits idle and consumes 0% CPU
+        let has_async_work = self.app.search_rx.is_some()
             || self.app.git_rx.is_some()
             || self.app.folder_picker_rx.is_some()
             || self.app.last_search_trigger.is_some()
             || self.drag_source.is_some();
-        if needs_frequent {
+        if has_async_work {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        } else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(2000));
+        } else if self.app.focus == Focus::Editor {
+            // Cursor blink — repaint every 500ms only when editor is focused
+            ctx.request_repaint_after(std::time::Duration::from_millis(530));
         }
+        // Otherwise: no repaint requested — egui repaints only on user input (mouse/keyboard)
     }
 }
 
