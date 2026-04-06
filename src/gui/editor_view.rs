@@ -623,11 +623,11 @@ impl CodeEditorApp {
                     self.app.settings.save();
                     self.app.status_message = format!("Zoom: {}px", self.app.settings.font_size as u32);
                 } else {
-                    // Pixel-level smooth scrolling (Zed: immediate position, no animation)
+                    // Zed-style: immediate integer line scroll (no sub-pixel = no jitter)
                     let ed = &mut self.app.editors[self.app.active_editor];
                     let max_scroll = (lc.saturating_sub(1) + ed.viewport_height / 2) as f32;
                     let scroll_lines = -sd / lh;
-                    ed.scroll_offset = (ed.scroll_offset + scroll_lines).clamp(0.0, max_scroll);
+                    ed.scroll_offset = (ed.scroll_offset + scroll_lines).round().clamp(0.0, max_scroll);
                 }
             }
 
@@ -635,12 +635,10 @@ impl CodeEditorApp {
             let vis = (rect.height() / lh) as usize;
             self.app.editors[self.app.active_editor].viewport_height = vis.max(1);
             let ed = &self.app.editors[self.app.active_editor];
-            let scroll_f = ed.scroll_offset;
-            let so = scroll_f as usize; // integer line for visible_lines lookup
-            let pixel_offset = (scroll_f - so as f32) * lh; // sub-pixel offset
+            let so = ed.scroll_offset as usize;
             let text_y_offset = LINE_SPACING / 2.0;
 
-            let vis_lines = ed.visible_lines(so, vis + 3); // +3 to cover partial lines
+            let vis_lines = ed.visible_lines(so, vis + 2);
             let bracket_depths = compute_bracket_depths(&self.app, &vis_lines);
 
             // Gutter separator
@@ -662,7 +660,7 @@ impl CodeEditorApp {
             let mut ln_buf = String::with_capacity(8);
 
             for (row, &li) in vis_lines.iter().enumerate() {
-                let y = rect.min.y + row as f32 * lh - pixel_offset;
+                let y = rect.min.y + row as f32 * lh;
                 if y > rect.max.y { break; }
                 if y + lh < rect.min.y { continue; }
 
@@ -843,7 +841,7 @@ impl CodeEditorApp {
             let cursor_row = vis_lines.iter().position(|&l| l == ed.cursor.line);
             if self.app.focus == Focus::Editor {
                 if let Some(row) = cursor_row {
-                    let cy = rect.min.y + row as f32 * lh - pixel_offset;
+                    let cy = rect.min.y + row as f32 * lh;
                     let cx = rect.min.x + gw + ed.cursor.col as f32 * cw;
                     let blink = (ui.input(|i| i.time) * 1000.0) as u64 % (CURSOR_BLINK_INTERVAL_MS * 2) < CURSOR_BLINK_INTERVAL_MS;
                     if blink && cy < rect.max.y {
@@ -867,7 +865,7 @@ impl CodeEditorApp {
                     }
                 }
                 if let Some((_, ref blame_text)) = self.blame_cache {
-                    let cy = rect.min.y + row as f32 * lh - pixel_offset;
+                    let cy = rect.min.y + row as f32 * lh;
                     let line_len = ed.buffer.line_len(cur_line);
                     let blame_x = rect.min.x + gw + (line_len as f32 + 4.0) * cw;
                     painter.text(
@@ -910,7 +908,7 @@ impl CodeEditorApp {
                 if blink {
                     for ec in &ed.extra_cursors {
                         if let Some(row) = vis_lines.iter().position(|&l| l == ec.line) {
-                            let ecy = rect.min.y + row as f32 * lh - pixel_offset;
+                            let ecy = rect.min.y + row as f32 * lh;
                             let ecx = rect.min.x + gw + ec.col as f32 * cw;
                             if ecy < rect.max.y {
                                 painter.rect_filled(
