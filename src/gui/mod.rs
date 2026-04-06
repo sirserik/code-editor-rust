@@ -17,10 +17,13 @@ pub struct CodeEditorApp {
     tc: ThemeColors,
     clipboard: Option<arboard::Clipboard>,
     last_title: String,
-    // Zed-style dirty tracking — only redraw when state changed
+    // Zed-style dirty tracking
     dirty: bool,
     last_input_time: std::time::Instant,
     last_frame_time: std::time::Instant,
+    // Cached git blame
+    blame_cache: Option<(usize, String)>, // (line, blame_text)
+    blame_cache_line: usize,
 }
 
 pub(crate) const DEFAULT_FONT_SIZE: f32 = 14.0;
@@ -122,6 +125,8 @@ impl CodeEditorApp {
             dirty: true,
             last_input_time: now,
             last_frame_time: now,
+            blame_cache: None,
+            blame_cache_line: usize::MAX,
         }
     }
 }

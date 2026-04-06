@@ -3,14 +3,14 @@ use super::*;
 /// Compute bracket depth at each bracket in the file.
 fn compute_bracket_depths(app: &crate::app::App, vis_lines: &[usize]) -> std::collections::HashMap<(usize, usize), usize> {
     let ed = &app.editors[app.active_editor];
-    let max_line = vis_lines.last().copied().unwrap_or(0) + 1;
-    let lc = ed.line_count().min(max_line);
     let mut depths = std::collections::HashMap::new();
+    if vis_lines.is_empty() { return depths; }
     let mut depth: i32 = 0;
     let mut in_string = false;
     let mut string_char = '"';
 
-    for li in 0..lc {
+    // Only scan visible lines (not from line 0!)
+    for &li in vis_lines {
         let line = ed.buffer.get_line(li);
         let mut prev = '\0';
         for (ci, ch) in line.chars().enumerate() {
@@ -192,27 +192,16 @@ impl CodeEditorApp {
             let lh = ui.fonts(|f| f.row_height(&font)) + LINE_SPACING;
             let show_ln = self.app.settings.show_line_numbers;
 
-            // Recompute fold ranges — only on first open (empty) and debounced after edits
+            // Recompute fold + diagnostics — ONLY after 1s idle (never during cursor movement)
             {
                 let ed = &mut self.app.editors[self.app.active_editor];
+                let idle_enough = ed.last_edit_time
+                    .map(|t| t.elapsed().as_millis() > 1000)
+                    .unwrap_or(true);
                 if ed.fold_ranges.is_empty() && !ed.is_dirty {
-                    // First open — compute once
                     ed.compute_fold_ranges();
-                } else if ed.diagnostics_dirty {
-                    // After edit — defer fold computation, it's expensive
-                    let should_recompute = ed.last_edit_time
-                        .map(|t| t.elapsed().as_millis() > 500)
-                        .unwrap_or(true);
-                    if should_recompute {
-                        ed.compute_fold_ranges();
-                    }
-                }
-            }
-
-            // Recompute diagnostics when content changes
-            {
-                let ed = &mut self.app.editors[self.app.active_editor];
-                if ed.diagnostics_dirty {
+                } else if ed.diagnostics_dirty && idle_enough {
+                    ed.compute_fold_ranges();
                     let lang_for_diag = ed.file_path.as_ref().map(|p| syntax::detect_language(p).to_string()).unwrap_or("text".into());
                     let content = ed.buffer.text();
                     ed.diagnostics = syntax::check_syntax(&content, &lang_for_diag);
@@ -257,7 +246,16 @@ impl CodeEditorApp {
             let fold_w = cw * 1.8;
             let gw = if show_ln { cw * (gutter_digits as f32 + 1.5) + fold_w } else { fold_w };
 
-            let bracket_match = find_matching_bracket(&self.app, ed.cursor.line, ed.cursor.col);
+            // Bracket match — only compute if cursor is on a bracket char (avoid O(n) scan)
+            let bracket_match = {
+                let line = ed.buffer.get_line(ed.cursor.line);
+                let ch = line.chars().nth(ed.cursor.col);
+                if ch.map(|c| "()[]{}".contains(c)).unwrap_or(false) {
+                    find_matching_bracket(&self.app, ed.cursor.line, ed.cursor.col)
+                } else {
+                    None
+                }
+            };
 
             // Autocomplete key handling
             if self.app.show_autocomplete && self.app.focus == Focus::Editor {
@@ -846,23 +844,28 @@ impl CodeEditorApp {
                 }
             }
 
-            // Git blame for current line (Zed-style inline)
+            // Git blame for current line — cached, only re-fetch when line changes
             if let Some(row) = cursor_row {
-                if let (Some(ref root), Some(ref fp)) = (&self.app.file_tree.root_path, &ed.file_path.clone()) {
-                    let rel_path = fp.strip_prefix(root).unwrap_or(fp).trim_start_matches('/');
-                    let blame = self.app.git.blame_line(root, rel_path, ed.cursor.line);
-                    if let Some(blame_text) = blame {
-                        let cy = rect.min.y + row as f32 * lh - pixel_offset;
-                        let line_len = ed.buffer.line_len(ed.cursor.line);
-                        let blame_x = rect.min.x + gw + (line_len as f32 + 4.0) * cw;
-                        painter.text(
-                            Pos2::new(blame_x, cy + LINE_SPACING / 2.0),
-                            egui::Align2::LEFT_TOP,
-                            &blame_text,
-                            FontId::monospace(11.0),
-                            self.tc.fg_dim.linear_multiply(0.5),
-                        );
+                let cur_line = ed.cursor.line;
+                if self.blame_cache_line != cur_line {
+                    self.blame_cache_line = cur_line;
+                    if let (Some(ref root), Some(ref fp)) = (&self.app.file_tree.root_path, &ed.file_path.clone()) {
+                        let rel_path = fp.strip_prefix(root).unwrap_or(fp).trim_start_matches('/');
+                        self.blame_cache = self.app.git.blame_line(root, rel_path, cur_line)
+                            .map(|b| (cur_line, b));
                     }
+                }
+                if let Some((_, ref blame_text)) = self.blame_cache {
+                    let cy = rect.min.y + row as f32 * lh - pixel_offset;
+                    let line_len = ed.buffer.line_len(cur_line);
+                    let blame_x = rect.min.x + gw + (line_len as f32 + 4.0) * cw;
+                    painter.text(
+                        Pos2::new(blame_x, cy + LINE_SPACING / 2.0),
+                        egui::Align2::LEFT_TOP,
+                        blame_text,
+                        FontId::monospace(11.0),
+                        self.tc.fg_dim.linear_multiply(0.5),
+                    );
                 }
             }
 
