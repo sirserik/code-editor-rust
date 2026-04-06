@@ -55,30 +55,57 @@ pub(crate) fn file_icon_color(name: &str, dark: bool) -> Color32 {
     }
     let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
+        // Systems
         "rs" => Color32::from_rgb(204, 120, 50),
+        "c" | "h" => Color32::from_rgb(104, 151, 210),
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" => Color32::from_rgb(104, 151, 210),
+        "go" | "mod" => Color32::from_rgb(0, 173, 216),
+        "swift" => Color32::from_rgb(232, 131, 106),
+        "kt" | "kts" => Color32::from_rgb(204, 120, 50),
+        "java" => Color32::from_rgb(204, 120, 50),
+        "cs" => Color32::from_rgb(104, 151, 210),
+        "zig" => Color32::from_rgb(244, 164, 32),
+        "dart" => Color32::from_rgb(0, 173, 216),
+        // Web
         "js" | "mjs" | "cjs" | "jsx" => Color32::from_rgb(220, 185, 0),
         "ts" | "mts" | "cts" | "tsx" => Color32::from_rgb(55, 125, 207),
-        "py" | "pyw" => Color32::from_rgb(55, 125, 170),
-        "go" => Color32::from_rgb(0, 173, 216),
-        "php" => Color32::from_rgb(130, 100, 190),
-        "rb" => Color32::from_rgb(200, 50, 50),
-        "java" | "kt" | "kts" => Color32::from_rgb(204, 120, 50),
-        "swift" => Color32::from_rgb(232, 131, 106),
-        "c" | "h" => Color32::from_rgb(104, 151, 210),
-        "cpp" | "cc" | "cxx" | "hpp" => Color32::from_rgb(104, 151, 210),
-        "html" | "htm" => Color32::from_rgb(232, 131, 106),
+        "html" | "htm" | "xhtml" => Color32::from_rgb(232, 131, 106),
         "css" | "scss" | "sass" | "less" => Color32::from_rgb(110, 76, 188),
         "vue" => Color32::from_rgb(65, 184, 131),
         "svelte" => Color32::from_rgb(255, 62, 0),
-        "json" | "jsonc" => Color32::from_rgb(152, 118, 170),
+        "astro" => Color32::from_rgb(255, 90, 50),
+        // Backend
+        "php" | "phtml" => Color32::from_rgb(130, 100, 190),
+        "rb" | "erb" | "rake" | "gemspec" => Color32::from_rgb(200, 50, 50),
+        "py" | "pyi" | "pyw" => Color32::from_rgb(55, 125, 170),
+        "ex" | "exs" => Color32::from_rgb(130, 90, 190),
+        "lua" => Color32::from_rgb(0, 0, 200),
+        "pl" | "pm" => Color32::from_rgb(55, 125, 170),
+        // Data / config
+        "json" | "jsonc" | "json5" => Color32::from_rgb(152, 118, 170),
         "yaml" | "yml" => Color32::from_rgb(152, 118, 170),
-        "toml" => Color32::from_rgb(106, 171, 115),
-        "xml" | "xsl" => Color32::from_rgb(204, 147, 89),
-        "md" | "mdx" => Color32::from_rgb(104, 151, 210),
-        "sql" | "sqlite" => Color32::from_rgb(204, 167, 89),
-        "sh" | "bash" | "zsh" | "fish" => Color32::from_rgb(106, 171, 115),
+        "toml" | "ini" | "cfg" | "conf" => Color32::from_rgb(106, 171, 115),
+        "xml" | "xsl" | "xsd" | "plist" => Color32::from_rgb(204, 147, 89),
         "svg" => Color32::from_rgb(204, 147, 89),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" => Color32::from_rgb(179, 131, 191),
+        "sql" | "psql" => Color32::from_rgb(204, 167, 89),
+        "prisma" => Color32::from_rgb(55, 125, 207),
+        "graphql" | "gql" => Color32::from_rgb(220, 50, 130),
+        "proto" => Color32::from_rgb(104, 151, 210),
+        // Shell
+        "sh" | "bash" | "zsh" | "fish" | "bats" | "ksh" => Color32::from_rgb(106, 171, 115),
+        "ps1" | "bat" | "cmd" => Color32::from_rgb(55, 125, 207),
+        // Docs
+        "md" | "mdx" | "markdown" => Color32::from_rgb(104, 151, 210),
+        "tex" | "latex" => Color32::from_rgb(0, 128, 0),
+        "diff" | "patch" => Color32::from_rgb(220, 185, 0),
+        // DevOps
+        "tf" | "hcl" => Color32::from_rgb(130, 90, 220),
+        "nix" => Color32::from_rgb(104, 151, 210),
+        // Images
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" | "bmp" => Color32::from_rgb(179, 131, 191),
+        // Fonts/binary
+        "woff" | "woff2" | "ttf" | "otf" | "eot" => Color32::from_rgb(128, 128, 128),
+        "zip" | "tar" | "gz" | "rar" | "7z" => Color32::from_rgb(128, 128, 128),
         _ => if dark { Color32::from_rgb(128, 128, 128) } else { Color32::from_rgb(160, 160, 160) },
     }
 }

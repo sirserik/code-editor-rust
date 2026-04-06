@@ -90,71 +90,145 @@ pub fn highlight_line(line: &str, language: &str) -> Vec<HighlightSpan> {
     spans
 }
 
+/// Detect language from file path — Zed-style path_suffixes + filename matching
 pub fn detect_language(path: &str) -> &str {
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
 
+    // Extension-based (Zed: path_suffixes)
     match ext {
+        // Systems
         "rs" => "rust",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "ipp" => "cpp",
+        "go" | "mod" => "go",
+        "swift" => "swift",
+        "kt" | "kts" => "kotlin",
+        "java" => "java",
+        "cs" => "csharp",
+        "m" | "mm" => "objc",
+        "zig" => "zig",
+        // Web frontend
         "js" | "mjs" | "cjs" => "javascript",
         "jsx" => "jsx",
         "ts" | "mts" | "cts" => "typescript",
         "tsx" => "tsx",
-        "py" => "python",
-        "go" => "go",
-        "html" | "htm" => "html",
-        "xml" | "svg" => "xml",
+        "html" | "htm" | "xhtml" => "html",
         "css" => "css",
-        "scss" | "sass" => "scss",
-        "json" => "json",
-        "toml" => "toml",
-        "yaml" | "yml" => "yaml",
-        "sh" | "bash" | "zsh" => "sh",
-        "php" => "php",
-        "java" => "java",
-        "c" | "h" => "c",
-        "cpp" | "cc" | "cxx" | "hpp" => "cpp",
-        "sql" => "sql",
-        "md" | "markdown" => "markdown",
-        "rb" => "ruby",
-        "swift" => "swift",
-        "kt" | "kts" => "kotlin",
+        "scss" | "sass" | "less" => "scss",
         "vue" => "vue",
         "svelte" => "svelte",
-        "Dockerfile" => "dockerfile",
+        "astro" => "html",
+        // Web backend
+        "php" | "phtml" => "php",
+        "rb" | "erb" | "rake" | "gemspec" => "ruby",
+        "py" | "pyi" | "mpy" | "pyw" => "python",
+        // Data / config
+        "json" | "jsonc" | "json5" | "geojson" | "ipynb" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "xml" | "xsl" | "xslt" | "xsd" | "plist" | "wsdl" => "xml",
+        "svg" => "xml",
+        "ini" | "cfg" | "conf" => "toml",
+        "csv" | "tsv" => "text",
+        // Shell / scripting
+        "sh" | "bash" | "zsh" | "fish" | "bats" | "ksh" | "csh" | "tcsh" => "sh",
+        "ps1" | "psm1" | "psd1" => "powershell",
+        "bat" | "cmd" => "batch",
+        "lua" => "lua",
+        "pl" | "pm" | "t" => "perl",
+        "r" | "R" => "r",
+        // Markup / docs
+        "md" | "markdown" | "mdx" => "markdown",
+        "tex" | "latex" | "cls" | "sty" => "latex",
+        "rst" | "rest" => "text",
+        // Database
+        "sql" | "psql" | "mysql" => "sql",
+        "prisma" => "prisma",
+        // DevOps / infra
+        "tf" | "tfvars" | "hcl" => "hcl",
+        "nix" => "nix",
+        // Misc
+        "diff" | "patch" => "diff",
+        "graphql" | "gql" => "graphql",
+        "proto" => "protobuf",
+        "dart" => "dart",
+        "ex" | "exs" => "elixir",
+        "erl" | "hrl" => "erlang",
+        "hs" | "lhs" => "haskell",
+        "ml" | "mli" => "ocaml",
+        "scala" | "sc" => "scala",
+        "clj" | "cljs" | "cljc" | "edn" => "clojure",
+        "elm" => "elm",
+        "v" | "vh" | "sv" | "svh" => "verilog",
+        "wasm" | "wat" => "wasm",
         _ => {
-            // Check filename
+            // Filename-based matching (Zed: exact filename -> language)
             let name = std::path::Path::new(path)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
             match name {
-                "Dockerfile" | "dockerfile" => "dockerfile",
-                "Makefile" | "makefile" | "GNUmakefile" => "makefile",
-                ".gitignore" | ".dockerignore" | ".hgignore" => "gitignore",
-                ".env" | ".env.local" | ".env.production" | ".env.development" | ".env.test" | ".env.example" => "sh",
-                ".htaccess" => "apache",
-                ".bashrc" | ".zshrc" | ".bash_profile" | ".zprofile" | ".profile" | ".zshenv" => "sh",
-                ".editorconfig" | ".prettierrc" | ".eslintrc" => "toml",
-                ".npmrc" | ".yarnrc" => "toml",
-                "docker-compose.yml" | "docker-compose.yaml" => "yaml",
-                "Gemfile" | "Rakefile" => "ruby",
-                "Vagrantfile" => "ruby",
-                "Cargo.lock" => "toml",
-                "package.json" | "tsconfig.json" | "composer.json" => "json",
+                // Docker
+                "Dockerfile" | "dockerfile" | "Containerfile" => "dockerfile",
+                // Make
+                "Makefile" | "makefile" | "GNUmakefile" | "Justfile" | "justfile" => "makefile",
+                // Git
+                ".gitignore" | ".gitattributes" | ".gitmodules" | ".dockerignore" | ".hgignore" => "gitignore",
+                // Shell configs (Zed bash path_suffixes)
+                ".bashrc" | ".bash_profile" | ".bash_aliases" | ".bash_logout"
+                | ".zshrc" | ".zshenv" | ".zprofile" | ".zsh_aliases" | ".zlogin"
+                | ".profile" | ".login" => "sh",
+                // Env files
+                ".env" | ".env.local" | ".env.production" | ".env.development"
+                | ".env.test" | ".env.example" | ".env.staging" => "sh",
+                // Package managers
+                "Gemfile" | "Rakefile" | "Guardfile" | "Fastfile" | "Podfile" | "Vagrantfile" | "Brewfile" => "ruby",
+                "PKGBUILD" | "APKBUILD" => "sh",
+                // Config files
+                ".editorconfig" | ".prettierrc" | ".eslintrc" | ".stylelintrc" => "json",
+                ".npmrc" | ".yarnrc" | ".nvmrc" => "toml",
+                "Cargo.lock" | "Pipfile" => "toml",
+                "package.json" | "tsconfig.json" | "jsconfig.json" | "composer.json"
+                | "bower.json" | "lerna.json" | ".babelrc" => "json",
+                "docker-compose.yml" | "docker-compose.yaml"
+                | ".eslintrc.yml" | ".prettierrc.yml" | ".gitlab-ci.yml" => "yaml",
+                ".htaccess" | "nginx.conf" | "httpd.conf" => "sh",
+                "CMakeLists.txt" => "cmake",
+                "go.sum" => "go",
+                "requirements.txt" | "constraints.txt" => "text",
+                "Procfile" => "sh",
                 _ => {
-                    // Check if filename starts with dot and has no extension — treat as config/shell
-                    if name.starts_with('.') && !name.contains('.') || name.ends_with("rc") {
-                        "sh"
-                    } else {
-                        "text"
+                    // Shebang detection (Zed: first_line_pattern) — for opened files
+                    // Fallback heuristics
+                    if name.starts_with('.') && name.len() > 1 {
+                        let without_dot = &name[1..];
+                        if without_dot.ends_with("rc") || without_dot.ends_with("_profile") {
+                            return "sh";
+                        }
                     }
+                    "text"
                 }
             }
         }
     }
+}
+
+/// Detect language from file content (shebang line) — Zed: first_line_pattern
+pub fn detect_language_from_content(first_line: &str) -> Option<&'static str> {
+    if !first_line.starts_with("#!") { return None; }
+    let line = first_line.to_lowercase();
+    if line.contains("python") { return Some("python"); }
+    if line.contains("ruby") { return Some("ruby"); }
+    if line.contains("node") || line.contains("deno") || line.contains("bun") { return Some("javascript"); }
+    if line.contains("bash") || line.contains("/sh") { return Some("sh"); }
+    if line.contains("zsh") { return Some("sh"); }
+    if line.contains("perl") { return Some("perl"); }
+    if line.contains("php") { return Some("php"); }
+    if line.contains("lua") { return Some("lua"); }
+    None
 }
 
 // ---- Language-specific highlighters ----

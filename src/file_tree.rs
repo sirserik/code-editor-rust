@@ -44,17 +44,35 @@ pub struct FlatEntry {
     pub is_expanded: bool,
 }
 
-/// Directories that are ALWAYS hidden (heavy/internal)
+/// Directories that are ALWAYS hidden (Zed only hides .git; rest via .gitignore)
+/// We keep a small hardcoded list for UX since we don't parse .gitignore yet
 const ALWAYS_IGNORED: &[&str] = &[
     ".git",
+    ".DS_Store",
+    "Thumbs.db",
+];
+
+/// Directories hidden by default (can be shown via toggle)
+const DEFAULT_IGNORED_DIRS: &[&str] = &[
     "node_modules",
     "target",
     ".next",
     "__pycache__",
     ".venv",
-    ".DS_Store",
     ".cache",
-    "Thumbs.db",
+    "vendor",
+    "dist",
+    "build",
+    ".idea",
+    ".vscode",
+    ".gradle",
+    ".dart_tool",
+    ".pub-cache",
+    "coverage",
+    ".turbo",
+    ".nuxt",
+    ".output",
+    "pods",
 ];
 
 impl FileTree {
@@ -76,6 +94,19 @@ impl FileTree {
         let root = Self::build_tree(path, 0, show_hidden);
         self.root = Some(root);
         self.flatten();
+    }
+
+    /// Async load — scans in background, returns receiver for completion
+    pub fn load_async(&mut self, path: &str) -> std::sync::mpsc::Receiver<FileEntry> {
+        self.root_path = Some(path.to_string());
+        let show_hidden = self.show_hidden;
+        let path = path.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let root = Self::build_tree(&path, 0, show_hidden);
+            let _ = tx.send(root);
+        });
+        rx
     }
 
     fn build_tree(path: &str, depth: usize, show_hidden: bool) -> FileEntry {
@@ -106,6 +137,9 @@ impl FileTree {
             .filter(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
                 if ALWAYS_IGNORED.contains(&name.as_str()) {
+                    return false;
+                }
+                if DEFAULT_IGNORED_DIRS.contains(&name.as_str()) {
                     return false;
                 }
                 if !show_hidden && name.starts_with('.') {
