@@ -142,7 +142,7 @@ impl CodeEditorApp {
                     let (rect, _) = ui.allocate_exact_size(avail, egui::Sense::click());
                     let painter = ui.painter_at(rect);
                     let vis = (rect.height() / lh) as usize;
-                    let vis_lines = ed.visible_lines(ed.scroll_offset, vis + 2);
+                    let vis_lines = ed.visible_lines(ed.scroll_offset as usize, vis + 2);
                     let gutter_digits = format!("{}", ed.line_count()).len().max(3);
                     let gw = cw * (gutter_digits as f32 + 2.0);
                     let dark = self.app.settings.theme.resolved() != Theme::Light;
@@ -233,14 +233,17 @@ impl CodeEditorApp {
                 // Ensure cache is right size
                 ed.highlight_cache.resize(lc, Vec::new());
                 // Only highlight visible range + margin (lazy)
-                let vis_start = ed.scroll_offset.saturating_sub(5);
-                let vis_end = (ed.scroll_offset + ed.viewport_height + 10).min(lc);
-                let needs_rehighlight = lang_changed || ed.highlight_dirty_from.is_some();
-                if needs_rehighlight {
-                    let dirty_from = ed.highlight_dirty_from.take().unwrap_or(vis_start).min(vis_start);
-                    let dirty_to = vis_end;
-                    let cache_lang = ed.highlight_cache_lang.clone();
-                    for li in dirty_from..dirty_to {
+                let scroll_line = ed.scroll_offset as usize;
+                let vis_start = scroll_line.saturating_sub(5);
+                let vis_end = (scroll_line + ed.viewport_height + 10).min(lc);
+                // Highlight visible lines that aren't cached yet (lazy fill on scroll)
+                let cache_lang = ed.highlight_cache_lang.clone();
+                let dirty_from = ed.highlight_dirty_from.take();
+                for li in vis_start..vis_end {
+                    let needs_hl = if let Some(df) = dirty_from { li >= df } else { false }
+                        || lang_changed
+                        || ed.highlight_cache[li].is_empty();
+                    if needs_hl {
                         let line = ed.buffer.get_line(li);
                         ed.highlight_cache[li] = syntax::highlight_line(&line, &cache_lang);
                     }
@@ -471,7 +474,7 @@ impl CodeEditorApp {
                         let rel = pos - rect.min;
                         let row_idx = (rel.y / lh) as usize;
                         let ed = &mut self.app.editors[self.app.active_editor];
-                        let vis_lines = ed.visible_lines(ed.scroll_offset, ed.viewport_height + 2);
+                        let vis_lines = ed.visible_lines(ed.scroll_offset as usize, ed.viewport_height + 2);
                         let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
                         let cc = ((rel.x - gw).max(0.0) / cw) as usize;
                         ed.cursor.line = actual_line;
@@ -486,7 +489,7 @@ impl CodeEditorApp {
                         let rel = pos - rect.min;
                         let row_idx = (rel.y / lh) as usize;
                         let ed = &mut self.app.editors[self.app.active_editor];
-                        let vis_lines = ed.visible_lines(ed.scroll_offset, ed.viewport_height + 2);
+                        let vis_lines = ed.visible_lines(ed.scroll_offset as usize, ed.viewport_height + 2);
                         let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
 
                         if rel.x < gw {
@@ -514,7 +517,7 @@ impl CodeEditorApp {
                         let rel = pos - rect.min;
                         let row_idx = (rel.y / lh) as usize;
                         let ed = &mut self.app.editors[self.app.active_editor];
-                        let vis_lines = ed.visible_lines(ed.scroll_offset, ed.viewport_height + 2);
+                        let vis_lines = ed.visible_lines(ed.scroll_offset as usize, ed.viewport_height + 2);
                         let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
                         let cc = ((rel.x - gw).max(0.0) / cw) as usize;
                         let col = cc.min(ed.buffer.line_len(actual_line));
@@ -533,7 +536,7 @@ impl CodeEditorApp {
                         let rel = pos - rect.min;
                         let row_idx = (rel.y / lh) as usize;
                         let ed = &mut self.app.editors[self.app.active_editor];
-                        let vis_lines = ed.visible_lines(ed.scroll_offset, ed.viewport_height + 2);
+                        let vis_lines = ed.visible_lines(ed.scroll_offset as usize, ed.viewport_height + 2);
                         let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
                         let cc = ((rel.x - gw).max(0.0) / cw) as usize;
                         let col = cc.min(ed.buffer.line_len(actual_line));
@@ -621,12 +624,11 @@ impl CodeEditorApp {
                     self.app.settings.save();
                     self.app.status_message = format!("Zoom: {}px", self.app.settings.font_size as u32);
                 } else {
-                    // Zed-style pixel-level smooth scrolling
+                    // Pixel-level smooth scrolling (Zed: immediate position, no animation)
                     let ed = &mut self.app.editors[self.app.active_editor];
-                    let max_scroll = lc.saturating_sub(1) + ed.viewport_height / 2;
+                    let max_scroll = (lc.saturating_sub(1) + ed.viewport_height / 2) as f32;
                     let scroll_lines = -sd / lh;
-                    let new_offset = (ed.scroll_offset as f32 + scroll_lines).clamp(0.0, max_scroll as f32);
-                    ed.scroll_offset = new_offset as usize;
+                    ed.scroll_offset = (ed.scroll_offset + scroll_lines).clamp(0.0, max_scroll);
                 }
             }
 
@@ -634,10 +636,12 @@ impl CodeEditorApp {
             let vis = (rect.height() / lh) as usize;
             self.app.editors[self.app.active_editor].viewport_height = vis.max(1);
             let ed = &self.app.editors[self.app.active_editor];
-            let so = ed.scroll_offset;
+            let scroll_f = ed.scroll_offset;
+            let so = scroll_f as usize; // integer line for visible_lines lookup
+            let pixel_offset = (scroll_f - so as f32) * lh; // sub-pixel offset
             let text_y_offset = LINE_SPACING / 2.0;
 
-            let vis_lines = ed.visible_lines(so, vis + 2);
+            let vis_lines = ed.visible_lines(so, vis + 3); // +3 to cover partial lines
             let bracket_depths = compute_bracket_depths(&self.app, &vis_lines);
 
             // Gutter separator
@@ -649,8 +653,9 @@ impl CodeEditorApp {
             }
 
             for (row, &li) in vis_lines.iter().enumerate() {
-                let y = rect.min.y + row as f32 * lh;
+                let y = rect.min.y + row as f32 * lh - pixel_offset;
                 if y > rect.max.y { break; }
+                if y + lh < rect.min.y { continue; } // skip lines above viewport
 
                 // Current line highlight
                 if li == ed.cursor.line {
@@ -829,7 +834,7 @@ impl CodeEditorApp {
             let cursor_row = vis_lines.iter().position(|&l| l == ed.cursor.line);
             if self.app.focus == Focus::Editor {
                 if let Some(row) = cursor_row {
-                    let cy = rect.min.y + row as f32 * lh;
+                    let cy = rect.min.y + row as f32 * lh - pixel_offset;
                     let cx = rect.min.x + gw + ed.cursor.col as f32 * cw;
                     let blink = (ui.input(|i| i.time) * 1000.0) as u64 % (CURSOR_BLINK_INTERVAL_MS * 2) < CURSOR_BLINK_INTERVAL_MS;
                     if blink && cy < rect.max.y {
@@ -847,7 +852,7 @@ impl CodeEditorApp {
                     let rel_path = fp.strip_prefix(root).unwrap_or(fp).trim_start_matches('/');
                     let blame = self.app.git.blame_line(root, rel_path, ed.cursor.line);
                     if let Some(blame_text) = blame {
-                        let cy = rect.min.y + row as f32 * lh;
+                        let cy = rect.min.y + row as f32 * lh - pixel_offset;
                         let line_len = ed.buffer.line_len(ed.cursor.line);
                         let blame_x = rect.min.x + gw + (line_len as f32 + 4.0) * cw;
                         painter.text(
@@ -891,7 +896,7 @@ impl CodeEditorApp {
                 if blink {
                     for ec in &ed.extra_cursors {
                         if let Some(row) = vis_lines.iter().position(|&l| l == ec.line) {
-                            let ecy = rect.min.y + row as f32 * lh;
+                            let ecy = rect.min.y + row as f32 * lh - pixel_offset;
                             let ecx = rect.min.x + gw + ec.col as f32 * cw;
                             if ecy < rect.max.y {
                                 painter.rect_filled(
@@ -905,7 +910,7 @@ impl CodeEditorApp {
             }
 
             if let Some(new_scroll) = minimap_new_scroll {
-                self.app.editors[self.app.active_editor].scroll_offset = new_scroll;
+                self.app.editors[self.app.active_editor].scroll_offset = new_scroll as f32;
             }
         });
     }

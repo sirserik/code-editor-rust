@@ -19,7 +19,7 @@ pub enum LineDiffStatus {
 pub struct Editor {
     pub buffer: Buffer,
     pub cursor: Cursor,
-    pub scroll_offset: usize,
+    pub scroll_offset: f32,  // pixel-level scroll (Zed-style)
     pub file_path: Option<String>,
     pub is_dirty: bool,
     pub viewport_height: usize,
@@ -62,7 +62,7 @@ impl Editor {
         Self {
             buffer: Buffer::new(),
             cursor: Cursor::new(),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             file_path: None,
             is_dirty: false,
             viewport_height: 24,
@@ -91,7 +91,7 @@ impl Editor {
         Ok(Self {
             buffer,
             cursor: Cursor::new(),
-            scroll_offset: 0,
+            scroll_offset: 0.0,
             file_path: Some(path.to_string()),
             is_dirty: false,
             viewport_height: 24,
@@ -376,7 +376,7 @@ impl Editor {
     pub fn move_to_top(&mut self) {
         self.cursor.line = 0;
         self.cursor.col = 0;
-        self.scroll_offset = 0;
+        self.scroll_offset = 0.0;
     }
 
     pub fn move_to_bottom(&mut self) {
@@ -397,13 +397,13 @@ impl Editor {
     }
 
     pub fn scroll_into_view(&mut self) {
-        // Zed-style autoscroll margin: keep cursor away from edges
         let margin = 3.min(self.viewport_height / 3);
-        if self.cursor.line < self.scroll_offset + margin {
-            self.scroll_offset = self.cursor.line.saturating_sub(margin);
+        let so = self.scroll_offset as usize;
+        if self.cursor.line < so + margin {
+            self.scroll_offset = self.cursor.line.saturating_sub(margin) as f32;
         }
-        if self.cursor.line + margin >= self.scroll_offset + self.viewport_height {
-            self.scroll_offset = (self.cursor.line + margin).saturating_sub(self.viewport_height) + 1;
+        if self.cursor.line + margin >= so + self.viewport_height {
+            self.scroll_offset = ((self.cursor.line + margin).saturating_sub(self.viewport_height) + 1) as f32;
         }
     }
 
@@ -698,8 +698,9 @@ impl Editor {
         let orig_lines: Vec<&str> = original.lines().collect();
         let lc = self.buffer.line_count();
         // Only diff visible range + margin to avoid O(n) per frame
-        let start = self.scroll_offset.saturating_sub(5);
-        let end = (self.scroll_offset + self.viewport_height + 10).min(lc);
+        let so = self.scroll_offset as usize;
+        let start = so.saturating_sub(5);
+        let end = (so + self.viewport_height + 10).min(lc);
         for li in start..end {
             if li >= orig_lines.len() {
                 self.line_diff.insert(li, LineDiffStatus::Added);
@@ -1153,13 +1154,13 @@ mod tests {
     fn scroll_into_view_margin() {
         let mut ed = editor_with_text(&"line\n".repeat(100));
         ed.viewport_height = 20;
-        ed.scroll_offset = 0;
+        ed.scroll_offset = 0.0;
         ed.cursor.line = 50;
         ed.scroll_into_view();
-        // Cursor should not be at edge — margin of 3
-        assert!(ed.scroll_offset > 0);
-        assert!(ed.cursor.line > ed.scroll_offset + 2);
-        assert!(ed.cursor.line < ed.scroll_offset + ed.viewport_height - 2);
+        let so = ed.scroll_offset as usize;
+        assert!(so > 0);
+        assert!(ed.cursor.line > so + 2);
+        assert!(ed.cursor.line < so + ed.viewport_height - 2);
     }
 
     // ── Fold tests ──
