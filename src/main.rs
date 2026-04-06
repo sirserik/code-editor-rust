@@ -55,9 +55,10 @@ fn main() -> eframe::Result<()> {
             .insert(0, "JetBrainsMono".to_owned());
         cc.egui_ctx.set_fonts(fonts);
 
-        // Set initial visuals from loaded theme
-        let tc = app.settings.theme.colors();
-        let mut visuals = if app.settings.theme == crate::settings::Theme::Light {
+        // Set initial visuals from loaded theme (resolve SystemDefault)
+        let resolved = app.settings.theme.resolved();
+        let tc = resolved.colors();
+        let mut visuals = if resolved == crate::settings::Theme::Light {
             egui::Visuals::light()
         } else {
             egui::Visuals::dark()

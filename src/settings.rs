@@ -25,6 +25,7 @@ fn default_font_size() -> f32 { 14.0 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Theme {
+    SystemDefault,
     TokyoNight,
     Dracula,
     OneDark,
@@ -38,6 +39,7 @@ pub enum Theme {
 
 impl Theme {
     pub const ALL: &'static [Theme] = &[
+        Theme::SystemDefault,
         Theme::TokyoNight,
         Theme::Dracula,
         Theme::OneDark,
@@ -51,6 +53,7 @@ impl Theme {
 
     pub fn name(&self) -> &'static str {
         match self {
+            Theme::SystemDefault => "System",
             Theme::TokyoNight => "Darcula",
             Theme::Dracula => "Dracula",
             Theme::OneDark => "One Dark",
@@ -60,6 +63,25 @@ impl Theme {
             Theme::SolarizedDark => "Solarized Dark",
             Theme::MonokaiPro => "Monokai Pro",
             Theme::Light => "Light",
+        }
+    }
+
+    /// Detect macOS system dark mode
+    pub fn system_is_dark() -> bool {
+        // Check macOS dark mode via defaults read
+        std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+            .map(|o| o.status.success()) // returns "Dark" if dark mode
+            .unwrap_or(false)
+    }
+
+    /// Resolve SystemDefault to actual theme
+    pub fn resolved(&self) -> Theme {
+        if *self == Theme::SystemDefault {
+            if Self::system_is_dark() { Theme::TokyoNight } else { Theme::Light }
+        } else {
+            *self
         }
     }
 }
@@ -91,6 +113,8 @@ pub struct ThemeColors {
 impl Theme {
     pub fn colors(&self) -> ThemeColors {
         match self {
+            // System Default — resolves to dark or light based on macOS setting
+            Theme::SystemDefault => Theme::resolved(&Theme::SystemDefault).colors(),
             // Darcula — Zed One Dark inspired palette
             Theme::TokyoNight => ThemeColors {
                 bg: Color32::from_rgb(40, 44, 51),              // #282c33
@@ -308,32 +332,32 @@ impl Theme {
                     Color32::from_rgb(255, 97, 136),
                 ],
             },
-            // JetBrains IntelliJ Light
+            // Light — VS Code/Zed inspired
             Theme::Light => ThemeColors {
-                bg: Color32::from_rgb(255, 255, 255),            // White editor bg — real IntelliJ
-                sidebar_bg: Color32::from_rgb(255, 255, 255),    // Same as editor — JB style
-                status_bg: Color32::from_rgb(62, 62, 62),        // Dark status bar
-                tab_bar_bg: Color32::from_rgb(238, 238, 238),    // Subtle tab strip
-                fg: Color32::from_rgb(0, 0, 0),                  // Black text — real IntelliJ
-                fg_dim: Color32::from_rgb(120, 120, 120),        // Secondary text
-                gutter_fg: Color32::from_rgb(153, 154, 158),     // Line numbers
-                accent: Color32::from_rgb(55, 125, 207),         // JB blue
-                selection_bg: Color32::from_rgb(166, 210, 255),  // Selection
-                current_line_bg: Color32::from_rgb(252, 250, 237), // Subtle yellow tint
+                bg: Color32::from_rgb(255, 255, 255),            // White editor
+                sidebar_bg: Color32::from_rgb(243, 243, 243),    // Light gray sidebar (VS Code style)
+                status_bg: Color32::from_rgb(0, 122, 204),       // Blue status bar (VS Code)
+                tab_bar_bg: Color32::from_rgb(236, 236, 236),    // Tab strip
+                fg: Color32::from_rgb(30, 30, 30),               // Near-black text
+                fg_dim: Color32::from_rgb(110, 115, 125),        // Readable secondary
+                gutter_fg: Color32::from_rgb(145, 150, 160),     // Line numbers
+                accent: Color32::from_rgb(0, 122, 204),          // VS Code blue
+                selection_bg: Color32::from_rgb(173, 214, 255),  // Bright selection
+                current_line_bg: Color32::from_rgb(248, 248, 248), // Very subtle
                 cursor_color: Color32::from_rgb(0, 0, 0),        // Black cursor
-                border: Color32::from_rgb(225, 225, 225),        // Soft borders
-                bracket_match_bg: Color32::from_rgb(153, 204, 255),
-                red: Color32::from_rgb(199, 37, 78),
-                green: Color32::from_rgb(10, 132, 57),
-                orange: Color32::from_rgb(199, 125, 10),
-                fold_fg: Color32::from_rgb(153, 154, 158),
+                border: Color32::from_rgb(218, 220, 224),        // Visible borders
+                bracket_match_bg: Color32::from_rgb(180, 215, 255),
+                red: Color32::from_rgb(205, 49, 49),
+                green: Color32::from_rgb(22, 130, 60),
+                orange: Color32::from_rgb(191, 120, 12),
+                fold_fg: Color32::from_rgb(145, 150, 160),
                 bracket_colors: [
-                    Color32::from_rgb(55, 125, 207),
-                    Color32::from_rgb(140, 44, 180),
-                    Color32::from_rgb(0, 140, 125),
-                    Color32::from_rgb(199, 37, 78),
-                    Color32::from_rgb(10, 132, 57),
-                    Color32::from_rgb(199, 125, 10),
+                    Color32::from_rgb(0, 122, 204),    // blue
+                    Color32::from_rgb(150, 40, 190),   // purple
+                    Color32::from_rgb(0, 140, 125),    // teal
+                    Color32::from_rgb(205, 49, 49),    // red
+                    Color32::from_rgb(22, 130, 60),    // green
+                    Color32::from_rgb(191, 120, 12),   // orange
                 ],
             },
         }
@@ -343,7 +367,7 @@ impl Theme {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            theme: Theme::TokyoNight,
+            theme: Theme::SystemDefault,
             tab_size: 4,
             show_line_numbers: true,
             word_wrap: false,

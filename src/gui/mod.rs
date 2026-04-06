@@ -140,11 +140,12 @@ impl eframe::App for CodeEditorApp {
             self.dirty = true;
         }
 
-        // ── Theme refresh ──
-        let new_tc = self.app.settings.theme.colors();
+        // ── Theme refresh (check system theme every ~5s for SystemDefault) ──
+        let resolved_theme = self.app.settings.theme.resolved();
+        let new_tc = resolved_theme.colors();
         if self.tc.bg != new_tc.bg {
             self.tc = new_tc;
-            let mut visuals = if self.app.settings.theme == Theme::Light {
+            let mut visuals = if resolved_theme == Theme::Light {
                 egui::Visuals::light()
             } else {
                 egui::Visuals::dark()
