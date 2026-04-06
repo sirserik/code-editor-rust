@@ -1,4 +1,5 @@
 use super::*;
+use std::fmt::Write;
 
 /// Compute bracket depth at each bracket in the file.
 fn compute_bracket_depths(app: &crate::app::App, vis_lines: &[usize]) -> std::collections::HashMap<(usize, usize), usize> {
@@ -650,78 +651,88 @@ impl CodeEditorApp {
                 );
             }
 
+            // Pre-compute selection once (not per line)
+            let norm_sel = ed.normalized_selection();
+            let cursor_line = ed.cursor.line;
+            let cursor_col = ed.cursor.col;
+            let xs = rect.min.x + gw;
+            let fold_x = rect.min.x + gw - fold_w + 2.0;
+            let ln_x = rect.min.x + gw - fold_w - cw * 0.8;
+            // Pre-format line numbers to avoid alloc per line
+            let mut ln_buf = String::with_capacity(8);
+
             for (row, &li) in vis_lines.iter().enumerate() {
                 let y = rect.min.y + row as f32 * lh - pixel_offset;
                 if y > rect.max.y { break; }
-                if y + lh < rect.min.y { continue; } // skip lines above viewport
+                if y + lh < rect.min.y { continue; }
 
                 // Current line highlight
-                if li == ed.cursor.line {
+                if li == cursor_line {
                     painter.rect_filled(
                         Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(rect.width(), lh)),
                         Rounding::ZERO, self.tc.current_line_bg,
                     );
                 }
 
-                // Git diff gutter
-                if let Some(diff_status) = ed.line_diff.get(&li) {
-                    let diff_color = match diff_status {
-                        crate::editor::LineDiffStatus::Added => self.tc.green,
-                        crate::editor::LineDiffStatus::Modified => Color32::from_rgb(70, 140, 220),
-                    };
-                    painter.rect_filled(
-                        Rect::from_min_size(Pos2::new(rect.min.x + 1.0, y), Vec2::new(3.0, lh)),
-                        Rounding::ZERO, diff_color,
-                    );
-                }
-
-                // Line numbers
-                if show_ln {
-                    let nc = if li == ed.cursor.line { self.tc.fg } else { self.tc.gutter_fg };
-                    painter.text(
-                        Pos2::new(rect.min.x + gw - fold_w - cw * 0.8, y + text_y_offset),
-                        egui::Align2::RIGHT_TOP,
-                        format!("{}", li + 1),
-                        sfont.clone(), nc,
-                    );
-                }
-
-                // Fold indicators
-                let fold_x = rect.min.x + gw - fold_w + 2.0;
-                if let Some(&fold_end) = ed.fold_ranges.get(&li) {
-                    let is_folded = ed.folded.contains(&li);
-                    let arrow = if is_folded { "▸" } else { "▾" };
-                    let fold_color = if li == ed.cursor.line { self.tc.fg_dim } else { self.tc.fold_fg };
-                    painter.text(
-                        Pos2::new(fold_x, y + text_y_offset),
-                        egui::Align2::LEFT_TOP, arrow, sfont.clone(), fold_color,
-                    );
-                    if is_folded {
-                        let line = ed.buffer.get_line(li);
-                        let line_end_x = rect.min.x + gw + line.chars().count() as f32 * cw + cw;
-                        let folded_count = fold_end - li;
+                // Git diff gutter (only if we have diffs)
+                if !ed.line_diff.is_empty() {
+                    if let Some(diff_status) = ed.line_diff.get(&li) {
+                        let diff_color = match diff_status {
+                            crate::editor::LineDiffStatus::Added => self.tc.green,
+                            crate::editor::LineDiffStatus::Modified => Color32::from_rgb(70, 140, 220),
+                        };
                         painter.rect_filled(
-                            Rect::from_min_size(Pos2::new(line_end_x, y + 2.0), Vec2::new(cw * (folded_count.to_string().len() as f32 + 4.0), lh - 4.0)),
-                            Rounding::same(3), if dark { Color32::from_rgb(40, 44, 65) } else { Color32::from_rgb(228, 228, 228) },
-                        );
-                        painter.text(
-                            Pos2::new(line_end_x + cw * 0.5, y + text_y_offset),
-                            egui::Align2::LEFT_TOP,
-                            format!("⋯ {} lines", folded_count),
-                            FontId::monospace((fs - 2.5).max(8.0)),
-                            self.tc.fg_dim,
+                            Rect::from_min_size(Pos2::new(rect.min.x + 1.0, y), Vec2::new(3.0, lh)),
+                            Rounding::ZERO, diff_color,
                         );
                     }
                 }
 
+                // Line numbers — reuse buffer to avoid alloc
+                if show_ln {
+                    ln_buf.clear();
+                    use std::fmt::Write;
+                    let _ = write!(ln_buf, "{}", li + 1);
+                    let nc = if li == cursor_line { self.tc.fg } else { self.tc.gutter_fg };
+                    painter.text(Pos2::new(ln_x, y + text_y_offset), egui::Align2::RIGHT_TOP,
+                        &ln_buf, sfont.clone(), nc);
+                }
+
+                // Fold indicators — only if this line has a fold
+                if !ed.fold_ranges.is_empty() {
+                    if let Some(&fold_end) = ed.fold_ranges.get(&li) {
+                        let is_folded = ed.folded.contains(&li);
+                        let arrow = if is_folded { "▸" } else { "▾" };
+                        let fold_color = if li == cursor_line { self.tc.fg_dim } else { self.tc.fold_fg };
+                        painter.text(Pos2::new(fold_x, y + text_y_offset), egui::Align2::LEFT_TOP,
+                            arrow, sfont.clone(), fold_color);
+                        if is_folded {
+                            let line_len = ed.buffer.line_len(li);
+                            let line_end_x = xs + line_len as f32 * cw + cw;
+                            let folded_count = fold_end - li;
+                            painter.rect_filled(
+                                Rect::from_min_size(Pos2::new(line_end_x, y + 2.0),
+                                    Vec2::new(cw * 6.0, lh - 4.0)),
+                                Rounding::same(3), if dark { Color32::from_rgb(40, 44, 65) } else { Color32::from_rgb(228, 228, 228) });
+                            ln_buf.clear();
+                            let _ = write!(ln_buf, "⋯ {}", folded_count);
+                            painter.text(Pos2::new(line_end_x + cw * 0.5, y + text_y_offset), egui::Align2::LEFT_TOP,
+                                &ln_buf, FontId::monospace((fs - 2.5).max(8.0)), self.tc.fg_dim);
+                        }
+                    }
+                }
+
+                // Get line content — single alloc per line
                 let line = ed.buffer.get_line(li);
                 let hls = if li < ed.highlight_cache.len() { &ed.highlight_cache[li] } else { &[] as &[syntax::HighlightSpan] };
-                // Zed: MAX_LINE_LEN = 1024 — don't render extremely long lines
-                let chars: Vec<char> = line.chars().take(MAX_LINE_LEN).collect();
-                let xs = rect.min.x + gw;
+                let chars: Vec<char> = if line.len() > MAX_LINE_LEN {
+                    line.chars().take(MAX_LINE_LEN).collect()
+                } else {
+                    line.chars().collect()
+                };
 
-                // Selection highlight
-                if let Some(sel) = ed.normalized_selection() {
+                // Selection highlight (pre-computed above loop)
+                if let Some(ref sel) = norm_sel {
                     if li >= sel.start_line && li <= sel.end_line {
                         let sel_start = if li == sel.start_line { sel.start_col } else { 0 };
                         let line_len = ed.buffer.line_len(li);
@@ -768,11 +779,11 @@ impl CodeEditorApp {
                         );
                     }
                 }
-                if li == ed.cursor.line && ed.cursor.col < chars.len() {
-                    let ch = chars[ed.cursor.col];
+                if li == cursor_line && cursor_col < chars.len() {
+                    let ch = chars[cursor_col];
                     if "()[]{}".contains(ch) && bracket_match.is_some() {
                         painter.rect_filled(
-                            Rect::from_min_size(Pos2::new(xs + ed.cursor.col as f32 * cw - 1.0, y), Vec2::new(cw + 2.0, lh)),
+                            Rect::from_min_size(Pos2::new(xs + cursor_col as f32 * cw - 1.0, y), Vec2::new(cw + 2.0, lh)),
                             Rounding::same(2), self.tc.bracket_match_bg,
                         );
                     }
