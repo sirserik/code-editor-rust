@@ -231,6 +231,33 @@ impl GitManager {
         Ok(result)
     }
 
+    pub fn blame_line(&self, repo_path: &str, file_path: &str, line: usize) -> Option<String> {
+        let repo = Repository::discover(repo_path).ok()?;
+        let blame = repo.blame_file(std::path::Path::new(file_path), None).ok()?;
+        let hunk = blame.get_line(line + 1)?; // git blame is 1-indexed
+        let sig = hunk.final_signature();
+        let name = sig.name().unwrap_or("unknown");
+        let commit_id = hunk.final_commit_id();
+        let short_id = &commit_id.to_string()[..7];
+        // Get commit time
+        let commit = repo.find_commit(commit_id).ok()?;
+        let time = commit.time();
+        let secs = time.seconds();
+        // Format as relative time
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let diff = now - secs;
+        let age = if diff < 60 { "just now".to_string() }
+            else if diff < 3600 { format!("{}m ago", diff / 60) }
+            else if diff < 86400 { format!("{}h ago", diff / 3600) }
+            else if diff < 2592000 { format!("{}d ago", diff / 86400) }
+            else if diff < 31536000 { format!("{}mo ago", diff / 2592000) }
+            else { format!("{}y ago", diff / 31536000) };
+        Some(format!("{} {} • {}", short_id, name, age))
+    }
+
     pub fn discard_file(&mut self, repo_path: &str, file_path: &str) -> Result<(), String> {
         let repo = Repository::discover(repo_path).map_err(|e| e.to_string())?;
         let mut checkout = git2::build::CheckoutBuilder::new();

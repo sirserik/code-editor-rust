@@ -104,6 +104,8 @@ pub struct App {
 
     // Minimap
     pub show_minimap: bool,
+    pub split_active: bool,     // vertical split enabled
+    pub split_editor: usize,    // index of the second editor in split
 
     // Breadcrumbs
     pub show_breadcrumbs: bool,
@@ -208,6 +210,8 @@ impl App {
             show_autocomplete: false,
             auto_save_enabled: true,
             show_minimap: true,
+            split_active: false,
+            split_editor: 0,
             show_breadcrumbs: true,
             pending_action: None,
             folder_picker_rx: None,

@@ -3,6 +3,7 @@ mod menubar;
 mod sidebar;
 mod editor_view;
 mod overlays;
+mod terminal_view;
 
 use crate::app::{App, Focus, SidebarTab, PaletteAction};
 use crate::settings::{Theme, ThemeColors};
@@ -178,6 +179,7 @@ impl eframe::App for CodeEditorApp {
         self.render_menu_bar(ctx);
         self.render_tabs(ctx);
         self.render_status(ctx);
+        if self.app.show_terminal { self.render_terminal(ctx); }
         if self.app.show_sidebar { self.render_sidebar(ctx); }
         self.render_editor(ctx);
         self.render_drag_overlay(ctx);

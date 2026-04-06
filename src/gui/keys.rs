@@ -24,6 +24,8 @@ impl CodeEditorApp {
         let zoom_out = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Minus));
         let zoom_reset = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0));
         let find_in_project = ctx.input_mut(|i| i.consume_key(egui::Modifiers { command: true, shift: true, ..Default::default() }, egui::Key::F));
+        let toggle_terminal = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Backtick));
+        let split_editor = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Backslash));
         let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
 
         if quit { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
@@ -50,6 +52,30 @@ impl CodeEditorApp {
             self.app.focus = Focus::QuickOpen;
             self.app.quick_open_input.clear();
             self.app.quick_open_results.clear();
+        }
+        if split_editor {
+            if self.app.split_active {
+                // Close split
+                self.app.split_active = false;
+            } else {
+                // Open split — duplicate current tab
+                self.app.split_active = true;
+                self.app.split_editor = self.app.active_editor;
+            }
+        }
+        if toggle_terminal {
+            self.app.show_terminal = !self.app.show_terminal;
+            if self.app.show_terminal {
+                if self.app.active_terminal.is_none() {
+                    let dir = self.app.file_tree.root_path.as_deref();
+                    if let Ok(id) = self.app.terminal.spawn(dir) {
+                        self.app.active_terminal = Some(id);
+                    }
+                }
+                self.app.focus = Focus::Terminal;
+            } else {
+                self.app.focus = Focus::Editor;
+            }
         }
         if new_file { self.app.editors.push(crate::editor::Editor::new()); self.app.active_editor = self.app.editors.len() - 1; self.app.focus = Focus::Editor; }
         if close_tab { let i = self.app.active_editor; self.app.close_tab(i); }

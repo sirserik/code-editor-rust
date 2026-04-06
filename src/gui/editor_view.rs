@@ -95,6 +95,79 @@ fn find_matching_bracket(app: &crate::app::App, line: usize, col: usize) -> Opti
 
 impl CodeEditorApp {
     pub(super) fn render_editor(&mut self, ctx: &egui::Context) {
+        // Split pane — render second editor on the right
+        if self.app.split_active {
+            let split_idx = self.app.split_editor.min(self.app.editors.len().saturating_sub(1));
+            let split_name = self.app.editors[split_idx].file_name();
+            let tc = self.tc;
+            egui::SidePanel::right("split_editor")
+                .default_width(ctx.screen_rect().width() * 0.4)
+                .min_width(200.0)
+                .frame(egui::Frame::NONE.fill(tc.bg).inner_margin(0.0))
+                .show(ctx, |ui| {
+                    // Split border
+                    let r = ui.max_rect();
+                    ui.painter().line_segment(
+                        [Pos2::new(r.min.x, r.min.y), Pos2::new(r.min.x, r.max.y)],
+                        Stroke::new(1.0, tc.border),
+                    );
+                    // Header with filename
+                    let (hdr, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), egui::Sense::hover());
+                    let hdr_bg = tc.tab_bar_bg;
+                    ui.painter().rect_filled(hdr, Rounding::ZERO, hdr_bg);
+                    ui.painter().text(
+                        Pos2::new(hdr.min.x + 12.0, hdr.min.y + 6.0),
+                        egui::Align2::LEFT_TOP, &split_name,
+                        FontId::monospace(11.5), tc.fg_dim,
+                    );
+                    // Close split button
+                    let close_rect = Rect::from_min_size(
+                        Pos2::new(hdr.max.x - 28.0, hdr.min.y + 3.0),
+                        Vec2::new(20.0, 20.0),
+                    );
+                    let close_resp = ui.allocate_rect(close_rect, egui::Sense::click());
+                    ui.painter().text(close_rect.center(), egui::Align2::CENTER_CENTER,
+                        "×", FontId::monospace(14.0), tc.fg_dim);
+                    if close_resp.clicked() {
+                        self.app.split_active = false;
+                    }
+
+                    // Render split editor content (read-only view)
+                    let ed = &self.app.editors[split_idx];
+                    let fs = self.app.settings.font_size;
+                    let font = mono_sized(fs);
+                    let cw = ui.fonts(|f| f.glyph_width(&font, ' '));
+                    let lh = ui.fonts(|f| f.row_height(&font)) + LINE_SPACING;
+                    let avail = ui.available_size();
+                    let (rect, _) = ui.allocate_exact_size(avail, egui::Sense::click());
+                    let painter = ui.painter_at(rect);
+                    let vis = (rect.height() / lh) as usize;
+                    let vis_lines = ed.visible_lines(ed.scroll_offset, vis + 2);
+                    let gutter_digits = format!("{}", ed.line_count()).len().max(3);
+                    let gw = cw * (gutter_digits as f32 + 2.0);
+                    let dark = self.app.settings.theme.resolved() != Theme::Light;
+
+                    for (row, &li) in vis_lines.iter().enumerate() {
+                        let y = rect.min.y + row as f32 * lh;
+                        if y > rect.max.y { break; }
+                        // Line number
+                        let nc = tc.gutter_fg;
+                        painter.text(
+                            Pos2::new(rect.min.x + gw - cw * 0.8, y + LINE_SPACING / 2.0),
+                            egui::Align2::RIGHT_TOP,
+                            format!("{}", li + 1),
+                            small_sized(fs), nc,
+                        );
+                        // Text
+                        let line = ed.buffer.get_line(li);
+                        let hls = if li < ed.highlight_cache.len() { &ed.highlight_cache[li] } else { &[] as &[syntax::HighlightSpan] };
+                        let chars: Vec<char> = line.chars().take(MAX_LINE_LEN).collect();
+                        let xs = rect.min.x + gw;
+                        self.render_line_text(&painter, &chars, hls, &std::collections::HashMap::new(), li, xs, y + LINE_SPACING / 2.0, &font, dark);
+                    }
+                });
+        }
+
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(self.tc.bg)).show(ctx, |ui| {
             // Welcome screen
             let has_project = self.app.file_tree.root_path.is_some();
@@ -423,6 +496,73 @@ impl CodeEditorApp {
                 }
             }
 
+            // Right-click context menu (Zed-style)
+            response.context_menu(|ui| {
+                if ui.button("Cut              ⌘X").clicked() {
+                    let ed = self.app.active_editor();
+                    if ed.selection.is_some() {
+                        let sel = ed.normalized_selection();
+                        if let Some(sel) = sel {
+                            let text = ed.buffer.get_range(sel.start_line, sel.start_col, sel.end_line, sel.end_col);
+                            if let Some(ref mut cb) = self.clipboard { let _ = cb.set_text(&text); }
+                        }
+                        self.app.active_editor_mut().save_undo_snapshot();
+                        self.app.active_editor_mut().delete_selection_text();
+                    }
+                    ui.close_menu();
+                }
+                if ui.button("Copy             ⌘C").clicked() {
+                    let ed = self.app.active_editor();
+                    if let Some(text) = ed.get_selected_text() {
+                        if let Some(ref mut cb) = self.clipboard { let _ = cb.set_text(&text); }
+                    } else {
+                        let line = ed.buffer.get_line(ed.cursor.line);
+                        if let Some(ref mut cb) = self.clipboard { let _ = cb.set_text(format!("{}\n", line)); }
+                    }
+                    ui.close_menu();
+                }
+                if ui.button("Paste            ⌘V").clicked() {
+                    if let Some(ref mut cb) = self.clipboard {
+                        if let Ok(text) = cb.get_text() {
+                            let ed = self.app.active_editor_mut();
+                            ed.save_undo_snapshot();
+                            ed.delete_selection_text();
+                            for c in text.chars() {
+                                if c == '\n' { ed.insert_newline(); }
+                                else if c != '\r' { ed.insert_char(c); }
+                            }
+                        }
+                    }
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Select All       ⌘A").clicked() {
+                    self.app.active_editor_mut().select_all();
+                    ui.close_menu();
+                }
+                if ui.button("Select Line      ⌘L").clicked() {
+                    self.app.active_editor_mut().select_line();
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Toggle Comment   ⌘/").clicked() {
+                    self.app.active_editor_mut().toggle_comment();
+                    ui.close_menu();
+                }
+                if ui.button("Fold / Unfold").clicked() {
+                    let line = self.app.active_editor().cursor.line;
+                    self.app.active_editor_mut().toggle_fold(line);
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Command Palette  ⇧⌘P").clicked() {
+                    self.app.focus = Focus::CommandPalette;
+                    self.app.palette_input.clear();
+                    self.app.palette_selected = 0;
+                    ui.close_menu();
+                }
+            });
+
             // Scroll
             let cmd_held = ui.input(|i| i.modifiers.command);
             let sd = ui.input(|i| i.smooth_scroll_delta.y);
@@ -432,12 +572,12 @@ impl CodeEditorApp {
                     self.app.settings.font_size = (self.app.settings.font_size + delta).clamp(8.0, 32.0);
                     self.app.settings.save();
                 } else {
+                    // Zed-style pixel-level smooth scrolling
                     let ed = &mut self.app.editors[self.app.active_editor];
-                    let lines = (-sd / lh) as isize;
-                    // Allow scrolling past end by half a screen
                     let max_scroll = lc.saturating_sub(1) + ed.viewport_height / 2;
-                    if lines > 0 { ed.scroll_offset = (ed.scroll_offset + lines as usize).min(max_scroll); }
-                    else if lines < 0 { ed.scroll_offset = ed.scroll_offset.saturating_sub((-lines) as usize); }
+                    let scroll_lines = -sd / lh;
+                    let new_offset = (ed.scroll_offset as f32 + scroll_lines).clamp(0.0, max_scroll as f32);
+                    ed.scroll_offset = new_offset as usize;
                 }
             }
 
@@ -647,6 +787,26 @@ impl CodeEditorApp {
                         painter.rect_filled(
                             Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(2.0, lh)),
                             Rounding::ZERO, self.tc.cursor_color,
+                        );
+                    }
+                }
+            }
+
+            // Git blame for current line (Zed-style inline)
+            if let Some(row) = cursor_row {
+                if let (Some(ref root), Some(ref fp)) = (&self.app.file_tree.root_path, &ed.file_path.clone()) {
+                    let rel_path = fp.strip_prefix(root).unwrap_or(fp).trim_start_matches('/');
+                    let blame = self.app.git.blame_line(root, rel_path, ed.cursor.line);
+                    if let Some(blame_text) = blame {
+                        let cy = rect.min.y + row as f32 * lh;
+                        let line_len = ed.buffer.line_len(ed.cursor.line);
+                        let blame_x = rect.min.x + gw + (line_len as f32 + 4.0) * cw;
+                        painter.text(
+                            Pos2::new(blame_x, cy + LINE_SPACING / 2.0),
+                            egui::Align2::LEFT_TOP,
+                            &blame_text,
+                            FontId::monospace(11.0),
+                            self.tc.fg_dim.linear_multiply(0.5),
                         );
                     }
                 }

@@ -8,6 +8,7 @@ pub struct TerminalManager {
     terminals: HashMap<u32, TerminalInstance>,
     next_id: u32,
     pub output_buffer: Arc<Mutex<HashMap<u32, Vec<u8>>>>,
+    pub grids: HashMap<u32, TerminalGrid>,
 }
 
 struct TerminalInstance {
@@ -16,12 +17,104 @@ struct TerminalInstance {
     alive: Arc<Mutex<bool>>,
 }
 
+/// Simple terminal character grid (Zed uses alacritty_terminal)
+#[derive(Clone)]
+pub struct TerminalGrid {
+    pub cells: Vec<Vec<TermCell>>,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
+    pub rows: usize,
+    pub cols: usize,
+    scroll_back: Vec<Vec<TermCell>>,
+}
+
+#[derive(Clone, Default)]
+pub struct TermCell {
+    pub ch: char,
+    pub bold: bool,
+    pub fg_ansi: Option<u8>, // ANSI color index (0-15)
+}
+
+impl TerminalGrid {
+    pub fn new(rows: usize, cols: usize) -> Self {
+        Self {
+            cells: vec![vec![TermCell::default(); cols]; rows],
+            cursor_row: 0,
+            cursor_col: 0,
+            rows,
+            cols,
+            scroll_back: Vec::new(),
+        }
+    }
+
+    /// Process raw bytes from PTY through a simple ANSI parser
+    pub fn process_bytes(&mut self, data: &[u8]) {
+        for &byte in data {
+            match byte {
+                b'\n' => {
+                    self.cursor_row += 1;
+                    if self.cursor_row >= self.rows {
+                        self.scroll_up();
+                    }
+                }
+                b'\r' => {
+                    self.cursor_col = 0;
+                }
+                0x08 => { // backspace
+                    if self.cursor_col > 0 { self.cursor_col -= 1; }
+                }
+                0x07 => {} // bell — ignore
+                0x1b => {} // ESC — start of escape sequence (simplified: skip)
+                b if b >= 0x20 => {
+                    if self.cursor_col < self.cols && self.cursor_row < self.rows {
+                        self.cells[self.cursor_row][self.cursor_col] = TermCell {
+                            ch: byte as char,
+                            bold: false,
+                            fg_ansi: None,
+                        };
+                        self.cursor_col += 1;
+                        if self.cursor_col >= self.cols {
+                            self.cursor_col = 0;
+                            self.cursor_row += 1;
+                            if self.cursor_row >= self.rows {
+                                self.scroll_up();
+                            }
+                        }
+                    }
+                }
+                _ => {} // other control chars
+            }
+        }
+    }
+
+    fn scroll_up(&mut self) {
+        if !self.cells.is_empty() {
+            self.scroll_back.push(self.cells.remove(0));
+            // Limit scrollback to 1000 lines
+            if self.scroll_back.len() > 1000 {
+                self.scroll_back.remove(0);
+            }
+        }
+        self.cells.push(vec![TermCell::default(); self.cols]);
+        self.cursor_row = self.rows - 1;
+    }
+
+    /// Get display lines as strings
+    pub fn visible_lines(&self) -> Vec<String> {
+        self.cells.iter().map(|row| {
+            let s: String = row.iter().map(|c| if c.ch == '\0' { ' ' } else { c.ch }).collect();
+            s.trim_end().to_string()
+        }).collect()
+    }
+}
+
 impl TerminalManager {
     pub fn new() -> Self {
         Self {
             terminals: HashMap::new(),
             next_id: 1,
             output_buffer: Arc::new(Mutex::new(HashMap::new())),
+            grids: HashMap::new(),
         }
     }
 
@@ -55,11 +148,12 @@ impl TerminalManager {
         let alive_clone = alive.clone();
         let output_buffer = self.output_buffer.clone();
 
-        // Initialize buffer
+        // Initialize buffer and grid
         {
             let mut buf = output_buffer.lock().map_err(|e| format!("Mutex poisoned: {}", e))?;
             buf.insert(id, Vec::new());
         }
+        self.grids.insert(id, TerminalGrid::new(24, 80));
 
         // Reader thread
         thread::spawn(move || {
@@ -71,7 +165,7 @@ impl TerminalManager {
                         if let Ok(mut buffers) = output_buffer.lock() {
                             if let Some(output) = buffers.get_mut(&id) {
                                 output.extend_from_slice(&buf[..n]);
-                                // Cap buffer at 1MB to prevent unbounded growth
+                                // Cap buffer at 1MB
                                 const MAX_BUFFER: usize = 1024 * 1024;
                                 if output.len() > MAX_BUFFER {
                                     let drain_to = output.len() - MAX_BUFFER;
@@ -110,38 +204,34 @@ impl TerminalManager {
         }
     }
 
-    pub fn resize(&mut self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
-        if let Some(term) = self.terminals.get(&id) {
-            term._master
-                .resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                })
-                .map_err(|e| e.to_string())?;
-            Ok(())
-        } else {
-            Err("Terminal not found".to_string())
+    /// Read new output and process into grid
+    pub fn update_grid(&mut self, id: u32) {
+        let data = {
+            if let Ok(mut buffers) = self.output_buffer.lock() {
+                if let Some(output) = buffers.get_mut(&id) {
+                    let data = output.clone();
+                    output.clear();
+                    data
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        };
+        if !data.is_empty() {
+            if let Some(grid) = self.grids.get_mut(&id) {
+                grid.process_bytes(&data);
+            }
         }
     }
 
     pub fn kill(&mut self, id: u32) {
         self.terminals.remove(&id);
+        self.grids.remove(&id);
         if let Ok(mut buf) = self.output_buffer.lock() {
             buf.remove(&id);
         }
-    }
-
-    pub fn read_output(&self, id: u32) -> Vec<u8> {
-        if let Ok(mut buffers) = self.output_buffer.lock() {
-            if let Some(output) = buffers.get_mut(&id) {
-                let data = output.clone();
-                output.clear();
-                return data;
-            }
-        }
-        Vec::new()
     }
 
     pub fn is_alive(&self, id: u32) -> bool {
@@ -150,10 +240,6 @@ impl TerminalManager {
             .and_then(|t| t.alive.lock().ok())
             .map(|a| *a)
             .unwrap_or(false)
-    }
-
-    pub fn active_ids(&self) -> Vec<u32> {
-        self.terminals.keys().cloned().collect()
     }
 }
 
