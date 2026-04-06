@@ -141,6 +141,10 @@ impl eframe::App for CodeEditorApp {
             self.dirty = true;
         }
 
+        // ── Global UI zoom — scales everything (Zed-style) ──
+        let ui_scale = self.app.settings.font_size / DEFAULT_FONT_SIZE;
+        ctx.set_zoom_factor(ui_scale);
+
         // ── Theme refresh (check system theme every ~5s for SystemDefault) ──
         let resolved_theme = self.app.settings.theme.resolved();
         let new_tc = resolved_theme.colors();

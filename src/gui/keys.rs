@@ -153,16 +153,19 @@ impl CodeEditorApp {
         }
 
         if zoom_in {
-            self.app.settings.font_size = (self.app.settings.font_size + 1.0).min(32.0);
+            self.app.settings.font_size = (self.app.settings.font_size + 2.0).min(48.0);
             self.app.settings.save();
+            self.app.status_message = format!("Zoom: {}px", self.app.settings.font_size as u32);
         }
         if zoom_out {
-            self.app.settings.font_size = (self.app.settings.font_size - 1.0).max(8.0);
+            self.app.settings.font_size = (self.app.settings.font_size - 2.0).max(8.0);
             self.app.settings.save();
+            self.app.status_message = format!("Zoom: {}px", self.app.settings.font_size as u32);
         }
         if zoom_reset {
             self.app.settings.font_size = DEFAULT_FONT_SIZE;
             self.app.settings.save();
+            self.app.status_message = format!("Zoom: {}px (default)", self.app.settings.font_size as u32);
         }
     }
 }

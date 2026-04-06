@@ -99,13 +99,14 @@ impl CodeEditorApp {
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui.button("Zoom In            ⌘+").clicked() {
-                            self.app.settings.font_size = (self.app.settings.font_size + 1.0).min(32.0);
+                        let zoom_pct = (self.app.settings.font_size / DEFAULT_FONT_SIZE * 100.0) as u32;
+                        if ui.button(format!("Zoom In            ⌘+  ({}%)", zoom_pct)).clicked() {
+                            self.app.settings.font_size = (self.app.settings.font_size + 2.0).min(48.0);
                             self.app.settings.save();
                             ui.close_menu();
                         }
                         if ui.button("Zoom Out           ⌘-").clicked() {
-                            self.app.settings.font_size = (self.app.settings.font_size - 1.0).max(8.0);
+                            self.app.settings.font_size = (self.app.settings.font_size - 2.0).max(8.0);
                             self.app.settings.save();
                             ui.close_menu();
                         }

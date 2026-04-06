@@ -617,8 +617,9 @@ impl CodeEditorApp {
             if sd != 0.0 {
                 if cmd_held {
                     let delta = if sd > 0.0 { 1.0 } else { -1.0 };
-                    self.app.settings.font_size = (self.app.settings.font_size + delta).clamp(8.0, 32.0);
+                    self.app.settings.font_size = (self.app.settings.font_size + delta).clamp(8.0, 48.0);
                     self.app.settings.save();
+                    self.app.status_message = format!("Zoom: {}px", self.app.settings.font_size as u32);
                 } else {
                     // Zed-style pixel-level smooth scrolling
                     let ed = &mut self.app.editors[self.app.active_editor];
