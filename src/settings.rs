@@ -379,6 +379,8 @@ impl Default for Settings {
 
 impl Settings {
     pub fn add_recent_project(&mut self, path: &str) {
+        // Normalize: remove trailing slash
+        let path = path.trim_end_matches('/');
         let name = std::path::Path::new(path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -388,8 +390,10 @@ impl Settings {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Remove if already exists
-        self.recent_projects.retain(|p| p.path != path);
+        // Remove if already exists (with or without trailing slash)
+        self.recent_projects.retain(|p| {
+            p.path.trim_end_matches('/') != path
+        });
 
         // Add to front
         self.recent_projects.insert(0, RecentProject {

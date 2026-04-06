@@ -111,7 +111,7 @@ impl CodeEditorApp {
                 self.render_breadcrumbs(ui);
             }
 
-            let dark = self.app.settings.theme != Theme::Light;
+            let dark = self.app.settings.theme.resolved() != Theme::Light;
             let fs = self.app.settings.font_size;
             let font = mono_sized(fs);
             let sfont = small_sized(fs);
@@ -760,12 +760,13 @@ impl CodeEditorApp {
     }
 
     fn render_welcome(&mut self, ui: &mut egui::Ui) {
-        let dark = self.app.settings.theme != Theme::Light;
+        let resolved = self.app.settings.theme.resolved();
+        let dark = resolved != Theme::Light;
         let mut open_project: Option<String> = None;
         let mut remove_project: Option<String> = None;
-        let card_bg = if dark { Color32::from_rgb(50, 54, 62) } else { Color32::from_rgb(245, 246, 248) };
-        let card_border = if dark { Color32::from_rgb(65, 70, 80) } else { Color32::from_rgb(215, 218, 222) };
-        let card_hover = if dark { Color32::from_rgb(58, 63, 72) } else { Color32::from_rgb(235, 237, 240) };
+        let card_bg = if dark { Color32::from_rgb(50, 54, 62) } else { Color32::from_rgb(237, 239, 242) };
+        let card_border = if dark { Color32::from_rgb(65, 70, 80) } else { Color32::from_rgb(208, 212, 218) };
+        let card_hover = if dark { Color32::from_rgb(58, 63, 72) } else { Color32::from_rgb(225, 228, 232) };
 
         let avail_w = ui.available_width();
         let content_w = 520.0_f32.min(avail_w - 60.0);
@@ -974,7 +975,7 @@ impl CodeEditorApp {
             let root = self.app.file_tree.root_path.as_deref().unwrap_or("");
             let rel = fp.strip_prefix(root).unwrap_or(fp).trim_start_matches('/');
             let parts: Vec<&str> = rel.split('/').collect();
-            let dark = self.app.settings.theme != Theme::Light;
+            let dark = self.app.settings.theme.resolved() != Theme::Light;
             let bc_bg = if dark { Color32::from_rgb(32, 33, 40) } else { Color32::from_rgb(240, 240, 242) };
             let bc_h = 26.0;
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), bc_h), egui::Sense::hover());

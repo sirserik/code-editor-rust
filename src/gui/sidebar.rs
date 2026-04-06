@@ -15,7 +15,7 @@ impl CodeEditorApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    let dark = self.app.settings.theme != Theme::Light;
+                    let dark = self.app.settings.theme.resolved() != Theme::Light;
                     for (label, tab) in [("  Files  ", SidebarTab::Files), ("  Git  ", SidebarTab::Git), ("  Search  ", SidebarTab::Search)] {
                         let active = self.app.sidebar_tab == tab;
                         let c = if active { self.tc.accent } else { self.tc.fg_dim };
@@ -56,7 +56,7 @@ impl CodeEditorApp {
     }
 
     fn render_file_tree(&mut self, ui: &mut egui::Ui) {
-        let dark = self.app.settings.theme != Theme::Light;
+        let dark = self.app.settings.theme.resolved() != Theme::Light;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(8.0);
@@ -460,7 +460,7 @@ impl CodeEditorApp {
 
     fn render_search(&mut self, ui: &mut egui::Ui) {
         let tc = self.tc;
-        let dark = self.app.settings.theme != Theme::Light;
+        let dark = self.app.settings.theme.resolved() != Theme::Light;
         ui.add_space(6.0);
 
         ui.horizontal(|ui| {

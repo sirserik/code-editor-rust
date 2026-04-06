@@ -53,7 +53,7 @@ impl CodeEditorApp {
     }
 
     pub(super) fn render_overlays(&mut self, ctx: &egui::Context) {
-        let dark = self.app.settings.theme != Theme::Light;
+        let dark = self.app.settings.theme.resolved() != Theme::Light;
         let popup_frame = |accent: Color32| -> egui::Frame {
             let popup_bg = if dark { Color32::from_rgb(30, 31, 42) } else { Color32::from_rgb(255, 255, 255) };
             let shadow_alpha = if dark { 50 } else { 20 };

@@ -143,7 +143,7 @@ impl CodeEditorApp {
 
     pub(super) fn render_tabs(&mut self, ctx: &egui::Context) {
         let mut tab_to_close: Option<usize> = None;
-        let dark = self.app.settings.theme != Theme::Light;
+        let dark = self.app.settings.theme.resolved() != Theme::Light;
         egui::TopBottomPanel::top("tabs")
             .exact_height(36.0)
             .frame(egui::Frame::NONE.fill(self.tc.tab_bar_bg).inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 0 }))
@@ -253,7 +253,7 @@ impl CodeEditorApp {
 
     pub(super) fn render_status(&mut self, ctx: &egui::Context) {
         let tc = self.tc;
-        let dark = self.app.settings.theme != Theme::Light;
+        let dark = self.app.settings.theme.resolved() != Theme::Light;
         let status_bg = if dark {
             tc.sidebar_bg // Use sidebar color for consistency
         } else {
