@@ -1035,9 +1035,7 @@ impl CodeEditorApp {
 
             // ── Recent Projects ──
             let recent = self.app.settings.recent_projects.clone();
-            // Cache home dir once (not per-row per-frame)
             let home_dir = dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-            // clear_all_projects declared above ScrollArea scope
 
             if !recent.is_empty() {
                 ui.add_space(28.0);
@@ -1045,75 +1043,38 @@ impl CodeEditorApp {
                     ui.add_space(side_pad);
                     ui.label(RichText::new("Recent Projects").font(FontId::monospace(14.0)).color(self.tc.fg));
                     ui.add_space(12.0);
-                    // Clear All button
                     if ui.add(egui::Button::new(
                         RichText::new("Clear All").font(FontId::monospace(10.0)).color(self.tc.fg_dim)
                     ).fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() {
                         clear_all_projects = true;
                     }
                 });
-                ui.add_space(8.0);
+                ui.add_space(6.0);
 
                 for project in &recent {
+                    let short_path = project.path.replace(&home_dir, "~");
+                    let label_text = format!("{}  {}", project.name, short_path);
+
                     ui.horizontal(|ui| {
                         ui.add_space(side_pad);
-                        let (row_rect, row_resp) = ui.allocate_exact_size(
-                            Vec2::new(content_w, 44.0), egui::Sense::click(),
+                        let btn = ui.add_sized([content_w, 32.0],
+                            egui::Button::new(
+                                RichText::new(&label_text).font(FontId::monospace(12.0)).color(self.tc.fg)
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .rounding(Rounding::same(6))
+                            .stroke(Stroke::NONE)
                         );
-                        let hovered = row_resp.hovered();
-                        let clicked = row_resp.clicked();
-
-                        if hovered {
-                            ui.painter().rect_filled(row_rect, Rounding::same(8), card_hover);
-                            // Left accent bar
-                            ui.painter().rect_filled(
-                                Rect::from_min_size(row_rect.min, Vec2::new(3.0, row_rect.height())),
-                                Rounding::same(2), self.tc.accent,
-                            );
-                        }
-
-                        // Name
-                        let name_color = if hovered { self.tc.accent } else { self.tc.fg };
-                        ui.painter().text(
-                            Pos2::new(row_rect.min.x + 14.0, row_rect.min.y + 6.0),
-                            egui::Align2::LEFT_TOP,
-                            &project.name,
-                            FontId::monospace(13.0), name_color,
-                        );
-
-                        // Path (shortened)
-                        let short = project.path.replace(&home_dir, "~");
-                        ui.painter().text(
-                            Pos2::new(row_rect.min.x + 14.0, row_rect.min.y + 24.0),
-                            egui::Align2::LEFT_TOP, &short,
-                            FontId::monospace(10.5), self.tc.fg_dim,
-                        );
-
-                        // Delete button (visible on hover) — right side
-                        if hovered {
-                            let del_rect = Rect::from_min_size(
-                                Pos2::new(row_rect.max.x - 28.0, row_rect.min.y + 10.0),
-                                Vec2::new(22.0, 22.0),
-                            );
-                            let del_resp = ui.allocate_rect(del_rect, egui::Sense::click());
-                            ui.painter().text(del_rect.center(), egui::Align2::CENTER_CENTER,
-                                "×", FontId::monospace(14.0), self.tc.fg_dim);
-                            if del_resp.hovered() {
-                                ui.painter().rect_filled(del_rect, Rounding::same(3),
-                                    if dark { Color32::from_rgb(180, 50, 50) } else { Color32::from_rgb(220, 80, 80) });
-                                ui.painter().text(del_rect.center(), egui::Align2::CENTER_CENTER,
-                                    "×", FontId::monospace(14.0), Color32::WHITE);
-                            }
-                            if del_resp.clicked() {
-                                remove_project = Some(project.path.clone());
-                            }
-                        }
-
-                        if clicked {
+                        if btn.clicked() {
                             open_project = Some(project.path.clone());
                         }
+                        btn.context_menu(|ui| {
+                            if ui.button("Remove").clicked() {
+                                remove_project = Some(project.path.clone());
+                                ui.close_menu();
+                            }
+                        });
                     });
-                    ui.add_space(1.0);
                 }
             }
 
