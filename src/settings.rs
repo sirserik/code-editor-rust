@@ -440,3 +440,95 @@ impl Settings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_settings() {
+        let s = Settings::default();
+        assert_eq!(s.theme, Theme::SystemDefault);
+        assert_eq!(s.tab_size, 4);
+        assert!(s.show_line_numbers);
+        assert!(!s.word_wrap);
+        assert_eq!(s.font_size, 14.0);
+        assert!(s.recent_projects.is_empty());
+    }
+
+    #[test]
+    fn theme_names() {
+        assert_eq!(Theme::Light.name(), "Light");
+        assert_eq!(Theme::TokyoNight.name(), "Darcula");
+        assert_eq!(Theme::SystemDefault.name(), "System");
+    }
+
+    #[test]
+    fn theme_all_contains_system() {
+        assert!(Theme::ALL.contains(&Theme::SystemDefault));
+        assert!(Theme::ALL.contains(&Theme::Light));
+        assert!(Theme::ALL.contains(&Theme::TokyoNight));
+    }
+
+    #[test]
+    fn theme_resolved_system() {
+        let resolved = Theme::SystemDefault.resolved();
+        // Should resolve to either Light or TokyoNight
+        assert!(resolved == Theme::Light || resolved == Theme::TokyoNight);
+    }
+
+    #[test]
+    fn theme_resolved_non_system() {
+        assert_eq!(Theme::Dracula.resolved(), Theme::Dracula);
+        assert_eq!(Theme::Light.resolved(), Theme::Light);
+    }
+
+    #[test]
+    fn theme_colors_not_panic() {
+        // Ensure all themes produce valid colors
+        for theme in Theme::ALL {
+            let colors = theme.colors();
+            assert_ne!(colors.fg, colors.bg); // fg should differ from bg
+        }
+    }
+
+    #[test]
+    fn add_recent_project() {
+        let mut s = Settings::default();
+        s.recent_projects.clear();
+        s.add_recent_project("/test/project");
+        assert_eq!(s.recent_projects.len(), 1);
+        assert_eq!(s.recent_projects[0].path, "/test/project");
+        assert_eq!(s.recent_projects[0].name, "project");
+    }
+
+    #[test]
+    fn add_recent_project_dedup() {
+        let mut s = Settings::default();
+        s.recent_projects.clear();
+        s.add_recent_project("/test/project");
+        s.add_recent_project("/test/project/");
+        assert_eq!(s.recent_projects.len(), 1); // no duplicate
+    }
+
+    #[test]
+    fn add_recent_project_limit() {
+        let mut s = Settings::default();
+        s.recent_projects.clear();
+        for i in 0..15 {
+            s.add_recent_project(&format!("/test/project{}", i));
+        }
+        assert_eq!(s.recent_projects.len(), 10); // max 10
+    }
+
+    #[test]
+    fn remove_recent_project() {
+        let mut s = Settings::default();
+        s.recent_projects.clear();
+        s.add_recent_project("/test/a");
+        s.add_recent_project("/test/b");
+        s.remove_recent_project("/test/a");
+        assert_eq!(s.recent_projects.len(), 1);
+        assert_eq!(s.recent_projects[0].path, "/test/b");
+    }
+}

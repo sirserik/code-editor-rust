@@ -250,3 +250,80 @@ fn detect_shell() -> String {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_grid_new() {
+        let grid = TerminalGrid::new(24, 80);
+        assert_eq!(grid.rows, 24);
+        assert_eq!(grid.cols, 80);
+        assert_eq!(grid.cursor_row, 0);
+        assert_eq!(grid.cursor_col, 0);
+    }
+
+    #[test]
+    fn terminal_grid_process_text() {
+        let mut grid = TerminalGrid::new(24, 80);
+        grid.process_bytes(b"Hello");
+        assert_eq!(grid.cursor_col, 5);
+        let lines = grid.visible_lines();
+        assert!(lines[0].starts_with("Hello"));
+    }
+
+    #[test]
+    fn terminal_grid_newline() {
+        let mut grid = TerminalGrid::new(24, 80);
+        grid.process_bytes(b"Line1\r\nLine2");
+        let lines = grid.visible_lines();
+        assert_eq!(lines[0], "Line1");
+        assert!(lines[1].starts_with("Line2"));
+    }
+
+    #[test]
+    fn terminal_grid_carriage_return() {
+        let mut grid = TerminalGrid::new(24, 80);
+        grid.process_bytes(b"AAAA\rBB");
+        let lines = grid.visible_lines();
+        assert!(lines[0].starts_with("BBAA"));
+    }
+
+    #[test]
+    fn terminal_grid_scroll() {
+        let mut grid = TerminalGrid::new(3, 80);
+        grid.process_bytes(b"line1\nline2\nline3\nline4");
+        // After 4 lines in a 3-row grid, should have scrolled
+        assert_eq!(grid.cursor_row, 2); // last row
+        assert_eq!(grid.scroll_back.len(), 1);
+    }
+
+    #[test]
+    fn terminal_grid_backspace() {
+        let mut grid = TerminalGrid::new(24, 80);
+        grid.process_bytes(b"ABC\x08"); // ABC then backspace
+        assert_eq!(grid.cursor_col, 2);
+    }
+
+    #[test]
+    fn terminal_grid_wrap_at_end() {
+        let mut grid = TerminalGrid::new(24, 5); // 5-column grid
+        grid.process_bytes(b"12345X");
+        // "12345" fills row, "X" wraps to next row
+        assert_eq!(grid.cursor_row, 1);
+        assert_eq!(grid.cursor_col, 1);
+    }
+
+    #[test]
+    fn terminal_manager_new() {
+        let tm = TerminalManager::new();
+        assert!(tm.grids.is_empty());
+    }
+
+    #[test]
+    fn detect_shell_not_empty() {
+        let shell = detect_shell();
+        assert!(!shell.is_empty());
+    }
+}

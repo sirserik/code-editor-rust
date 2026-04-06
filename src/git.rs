@@ -268,3 +268,47 @@ impl GitManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_manager_new() {
+        let gm = GitManager::new();
+        assert!(gm.cache.is_empty());
+    }
+
+    #[test]
+    fn git_status_non_repo() {
+        let mut gm = GitManager::new();
+        let status = gm.get_status("/tmp/definitely_not_a_repo_12345");
+        assert!(!status.is_repo);
+        assert!(status.files.is_empty());
+    }
+
+    #[test]
+    fn git_status_caching() {
+        let mut gm = GitManager::new();
+        let _ = gm.get_status("/tmp");
+        let _ = gm.get_status("/tmp");
+        assert!(gm.cache.len() <= 1);
+    }
+
+    #[test]
+    fn invalidate_cache_works() {
+        let mut gm = GitManager::new();
+        let _ = gm.get_status("/tmp");
+        gm.invalidate_cache("/tmp");
+        assert!(!gm.cache.contains_key("/tmp"));
+    }
+
+    #[test]
+    fn file_status_symbols() {
+        assert_eq!(FileStatus::Modified.symbol(), "M");
+        assert_eq!(FileStatus::Added.symbol(), "A");
+        assert_eq!(FileStatus::Deleted.symbol(), "D");
+        assert_eq!(FileStatus::Renamed.symbol(), "R");
+        assert_eq!(FileStatus::Untracked.symbol(), "?");
+    }
+}

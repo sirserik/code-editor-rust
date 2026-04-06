@@ -231,6 +231,134 @@ pub fn detect_language_from_content(first_line: &str) -> Option<&'static str> {
     None
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Language detection by extension ──
+
+    #[test]
+    fn detect_rust() { assert_eq!(detect_language("main.rs"), "rust"); }
+    #[test]
+    fn detect_python() { assert_eq!(detect_language("script.py"), "python"); }
+    #[test]
+    fn detect_javascript() { assert_eq!(detect_language("app.js"), "javascript"); }
+    #[test]
+    fn detect_typescript() { assert_eq!(detect_language("index.ts"), "typescript"); }
+    #[test]
+    fn detect_tsx() { assert_eq!(detect_language("Component.tsx"), "tsx"); }
+    #[test]
+    fn detect_go() { assert_eq!(detect_language("main.go"), "go"); }
+    #[test]
+    fn detect_html() { assert_eq!(detect_language("index.html"), "html"); }
+    #[test]
+    fn detect_css() { assert_eq!(detect_language("style.css"), "css"); }
+    #[test]
+    fn detect_json() { assert_eq!(detect_language("package.json"), "json"); }
+    #[test]
+    fn detect_yaml() { assert_eq!(detect_language("config.yml"), "yaml"); }
+    #[test]
+    fn detect_toml() { assert_eq!(detect_language("Cargo.toml"), "toml"); }
+    #[test]
+    fn detect_sql() { assert_eq!(detect_language("query.sql"), "sql"); }
+    #[test]
+    fn detect_markdown() { assert_eq!(detect_language("README.md"), "markdown"); }
+    #[test]
+    fn detect_php() { assert_eq!(detect_language("index.php"), "php"); }
+    #[test]
+    fn detect_ruby() { assert_eq!(detect_language("app.rb"), "ruby"); }
+    #[test]
+    fn detect_swift() { assert_eq!(detect_language("ViewController.swift"), "swift"); }
+    #[test]
+    fn detect_dart() { assert_eq!(detect_language("main.dart"), "dart"); }
+    #[test]
+    fn detect_zig() { assert_eq!(detect_language("build.zig"), "zig"); }
+
+    // ── Detection by filename ──
+
+    #[test]
+    fn detect_dockerfile() { assert_eq!(detect_language("Dockerfile"), "dockerfile"); }
+    #[test]
+    fn detect_makefile() { assert_eq!(detect_language("Makefile"), "makefile"); }
+    #[test]
+    fn detect_gitignore() { assert_eq!(detect_language(".gitignore"), "gitignore"); }
+    #[test]
+    fn detect_env() { assert_eq!(detect_language(".env"), "sh"); }
+    #[test]
+    fn detect_env_local() { assert_eq!(detect_language(".env.local"), "sh"); }
+    #[test]
+    fn detect_bashrc() { assert_eq!(detect_language(".bashrc"), "sh"); }
+    #[test]
+    fn detect_zshrc() { assert_eq!(detect_language(".zshrc"), "sh"); }
+    #[test]
+    fn detect_gemfile() { assert_eq!(detect_language("Gemfile"), "ruby"); }
+    #[test]
+    fn detect_vagrantfile() { assert_eq!(detect_language("Vagrantfile"), "ruby"); }
+    #[test]
+    fn detect_pkgbuild() { assert_eq!(detect_language("PKGBUILD"), "sh"); }
+
+    // ── Shebang detection ──
+
+    #[test]
+    fn shebang_python() {
+        assert_eq!(detect_language_from_content("#!/usr/bin/env python3"), Some("python"));
+    }
+    #[test]
+    fn shebang_bash() {
+        assert_eq!(detect_language_from_content("#!/bin/bash"), Some("sh"));
+    }
+    #[test]
+    fn shebang_node() {
+        assert_eq!(detect_language_from_content("#!/usr/bin/env node"), Some("javascript"));
+    }
+    #[test]
+    fn shebang_ruby() {
+        assert_eq!(detect_language_from_content("#!/usr/bin/ruby"), Some("ruby"));
+    }
+    #[test]
+    fn shebang_none() {
+        assert_eq!(detect_language_from_content("// regular code"), None);
+    }
+    #[test]
+    fn shebang_sh() {
+        assert_eq!(detect_language_from_content("#!/bin/sh"), Some("sh"));
+    }
+
+    // ── Highlight tests ──
+
+    #[test]
+    fn highlight_rust_keywords() {
+        let spans = highlight_line("fn main() {", "rust");
+        assert!(!spans.is_empty());
+        // "fn" should be highlighted as keyword
+        assert!(spans.iter().any(|s| s.start == 0 && s.kind == HighlightKind::Keyword));
+    }
+
+    #[test]
+    fn highlight_string() {
+        let spans = highlight_line("let s = \"hello\";", "rust");
+        assert!(spans.iter().any(|s| s.kind == HighlightKind::String));
+    }
+
+    #[test]
+    fn highlight_comment() {
+        let spans = highlight_line("// this is a comment", "rust");
+        assert!(spans.iter().any(|s| s.kind == HighlightKind::Comment));
+    }
+
+    #[test]
+    fn highlight_empty_line() {
+        let spans = highlight_line("", "rust");
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn highlight_unknown_language() {
+        let spans = highlight_line("some text", "unknown_lang");
+        assert!(spans.is_empty());
+    }
+}
+
 // ---- Language-specific highlighters ----
 
 fn highlight_rust(line: &str, spans: &mut Vec<HighlightSpan>) {

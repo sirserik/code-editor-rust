@@ -559,3 +559,78 @@ fn fuzzy_score(text: &str, query: &str) -> Option<i32> {
 
     Some(score)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_tree_new() {
+        let ft = FileTree::new();
+        assert!(ft.root.is_none());
+        assert!(ft.root_path.is_none());
+        assert!(ft.flat_entries.is_empty());
+    }
+
+    #[test]
+    fn file_entry_new() {
+        let entry = FileEntry::new("/test".into(), "test".into(), true, 0);
+        assert_eq!(entry.name, "test");
+        assert!(entry.is_directory);
+        assert_eq!(entry.depth, 0);
+        assert!(!entry.is_expanded);
+    }
+
+    #[test]
+    fn fuzzy_score_exact() {
+        let score = fuzzy_score("hello", "hello");
+        assert!(score.is_some());
+        assert!(score.unwrap() > 50); // exact match bonus
+    }
+
+    #[test]
+    fn fuzzy_score_partial() {
+        let score = fuzzy_score("hello_world", "hw");
+        assert!(score.is_some());
+    }
+
+    #[test]
+    fn fuzzy_score_no_match() {
+        let score = fuzzy_score("hello", "xyz");
+        assert!(score.is_none());
+    }
+
+    #[test]
+    fn fuzzy_score_empty_query() {
+        let score = fuzzy_score("hello", "");
+        assert!(score.is_some());
+        assert_eq!(score.unwrap(), 0);
+    }
+
+    #[test]
+    fn fuzzy_search_empty() {
+        let ft = FileTree::new();
+        let results = ft.fuzzy_search("");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn always_ignored_contains_git() {
+        assert!(ALWAYS_IGNORED.contains(&".git"));
+        assert!(ALWAYS_IGNORED.contains(&".DS_Store"));
+    }
+
+    #[test]
+    fn default_ignored_dirs() {
+        assert!(DEFAULT_IGNORED_DIRS.contains(&"node_modules"));
+        assert!(DEFAULT_IGNORED_DIRS.contains(&"target"));
+        assert!(DEFAULT_IGNORED_DIRS.contains(&".next"));
+        assert!(DEFAULT_IGNORED_DIRS.contains(&"__pycache__"));
+    }
+
+    #[test]
+    fn selected_entry_empty() {
+        let ft = FileTree::new();
+        assert!(ft.selected_entry().is_none());
+    }
+}

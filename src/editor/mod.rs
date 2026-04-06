@@ -1055,4 +1055,161 @@ mod tests {
         ed.go_to_line(25);
         assert_eq!(ed.cursor.line, 24); // 0-indexed
     }
+
+    // ── Selection tests (Zed-style) ──
+
+    #[test]
+    fn shift_selection_extend() {
+        let mut ed = editor_with_text("Hello World");
+        ed.cursor.col = 0;
+        ed.ensure_selection_anchor();
+        ed.move_right();
+        ed.update_selection_end();
+        let sel = ed.normalized_selection().unwrap();
+        assert_eq!(sel.start_col, 0);
+        assert_eq!(sel.end_col, 1);
+    }
+
+    #[test]
+    fn selection_normalized_reversed() {
+        let mut ed = editor_with_text("ABCDEF");
+        ed.selection = Some(Selection {
+            start_line: 0, start_col: 5,
+            end_line: 0, end_col: 2,
+        });
+        let sel = ed.normalized_selection().unwrap();
+        assert_eq!(sel.start_col, 2);
+        assert_eq!(sel.end_col, 5);
+    }
+
+    #[test]
+    fn delete_selection_text() {
+        let mut ed = editor_with_text("Hello World");
+        ed.selection = Some(Selection {
+            start_line: 0, start_col: 5,
+            end_line: 0, end_col: 11,
+        });
+        let deleted = ed.delete_selection_text();
+        assert_eq!(deleted, Some(" World".to_string()));
+        assert_eq!(ed.buffer.get_line(0), "Hello");
+        assert!(ed.selection.is_none());
+    }
+
+    #[test]
+    fn select_word_at_cursor() {
+        let mut ed = editor_with_text("foo bar_baz qux");
+        ed.cursor.col = 5; // middle of "bar_baz"
+        ed.select_word_at_cursor();
+        let sel = ed.normalized_selection().unwrap();
+        assert_eq!(sel.start_col, 4);
+        assert_eq!(sel.end_col, 11);
+    }
+
+    #[test]
+    fn select_line() {
+        let mut ed = editor_with_text("Hello\nWorld");
+        ed.cursor.line = 0;
+        ed.select_line();
+        let sel = ed.normalized_selection().unwrap();
+        assert_eq!(sel.start_col, 0);
+        assert_eq!(sel.end_col, 5);
+    }
+
+    // ── Redo tests ──
+
+    #[test]
+    fn redo_works() {
+        let mut ed = Editor::new();
+        ed.save_undo_snapshot();
+        ed.insert_char('A');
+        ed.insert_char('B');
+        ed.save_undo_snapshot();
+        assert_eq!(ed.buffer.get_line(0), "AB");
+        ed.undo();
+        assert_eq!(ed.buffer.text(), "");
+        ed.redo();
+        assert_eq!(ed.buffer.get_line(0), "AB");
+    }
+
+    #[test]
+    fn redo_cleared_on_new_edit() {
+        let mut ed = Editor::new();
+        ed.save_undo_snapshot();
+        ed.insert_char('A');
+        ed.save_undo_snapshot();
+        ed.undo();
+        // Now type something new — redo should be cleared
+        ed.insert_char('X');
+        ed.save_undo_snapshot();
+        ed.undo();
+        // Redo should go to "X", not "A"
+        ed.redo();
+        assert!(ed.buffer.text().contains('X'));
+    }
+
+    // ── Scroll margin test ──
+
+    #[test]
+    fn scroll_into_view_margin() {
+        let mut ed = editor_with_text(&"line\n".repeat(100));
+        ed.viewport_height = 20;
+        ed.scroll_offset = 0;
+        ed.cursor.line = 50;
+        ed.scroll_into_view();
+        // Cursor should not be at edge — margin of 3
+        assert!(ed.scroll_offset > 0);
+        assert!(ed.cursor.line > ed.scroll_offset + 2);
+        assert!(ed.cursor.line < ed.scroll_offset + ed.viewport_height - 2);
+    }
+
+    // ── Fold tests ──
+
+    #[test]
+    fn compute_fold_ranges_basic() {
+        let mut ed = editor_with_text("fn main() {\n    let x = 1;\n}");
+        ed.compute_fold_ranges();
+        assert!(ed.fold_ranges.contains_key(&0)); // line 0 has fold to line 2
+        assert_eq!(*ed.fold_ranges.get(&0).unwrap(), 2);
+    }
+
+    #[test]
+    fn toggle_fold_hides_lines() {
+        let mut ed = editor_with_text("fn main() {\n    let x = 1;\n    let y = 2;\n}");
+        ed.compute_fold_ranges();
+        ed.toggle_fold(0);
+        assert!(ed.folded.contains(&0));
+        assert!(ed.is_line_folded(1));
+        assert!(ed.is_line_folded(2));
+        assert!(!ed.is_line_folded(0)); // fold start itself not hidden
+        // Unfold
+        ed.toggle_fold(0);
+        assert!(!ed.folded.contains(&0));
+        assert!(!ed.is_line_folded(1));
+    }
+
+    // ── Indent detection test ──
+
+    fn editor_with_raw(text: &str) -> Editor {
+        let mut ed = Editor::new();
+        ed.buffer.rope = ropey::Rope::from_str(text);
+        ed
+    }
+
+    #[test]
+    fn detect_indent_two_spaces() {
+        let ed = editor_with_raw("  a\n  b\n  c");
+        assert_eq!(ed.detect_indent(), 2);
+    }
+
+    #[test]
+    fn detect_indent_four_spaces() {
+        let ed = editor_with_raw("    a\n    b\n    c");
+        assert_eq!(ed.detect_indent(), 4);
+    }
+
+    #[test]
+    fn detect_indent_mixed() {
+        let ed = editor_with_raw("    a\n    b\n  c\n    d\n    e");
+        assert_eq!(ed.detect_indent(), 4);
+    }
 }
