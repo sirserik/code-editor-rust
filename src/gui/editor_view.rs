@@ -288,18 +288,66 @@ impl CodeEditorApp {
                         egui::Event::Text(text) => {
                             let ed = &mut self.app.editors[self.app.active_editor];
                             ed.save_undo_snapshot();
+                            // Auto-surround selection (Zed: wrap selection with brackets)
+                            if ed.selection.is_some() {
+                                let wrap_pair = match text.as_str() {
+                                    "(" => Some(("(", ")")),
+                                    "[" => Some(("[", "]")),
+                                    "{" => Some(("{", "}")),
+                                    "\"" => Some(("\"", "\"")),
+                                    "'" => Some(("'", "'")),
+                                    "`" => Some(("`", "`")),
+                                    _ => None,
+                                };
+                                if let Some((open, close)) = wrap_pair {
+                                    if let Some(sel) = ed.normalized_selection() {
+                                        let selected = ed.buffer.get_range(sel.start_line, sel.start_col, sel.end_line, sel.end_col);
+                                        ed.buffer.delete_range(sel.start_line, sel.start_col, sel.end_line, sel.end_col);
+                                        let wrapped = format!("{}{}{}", open, selected, close);
+                                        ed.buffer.insert_text(sel.start_line, sel.start_col, &wrapped);
+                                        ed.cursor.line = sel.start_line;
+                                        ed.cursor.col = sel.start_col + wrapped.len();
+                                        ed.selection = None;
+                                        ed.is_dirty = true;
+                                        ed.diagnostics_dirty = true;
+                                        let edit_line = ed.cursor.line;
+                                        ed.scroll_into_view();
+                                        ed.invalidate_highlights_from(edit_line);
+                                        self.app.trigger_autocomplete();
+                                        continue;
+                                    }
+                                }
+                            }
                             // Typing replaces selection
                             ed.delete_selection_text();
                             let edit_line = ed.cursor.line;
                             for c in text.chars() {
+                                // Zed skip-over: if next char is the closing bracket, just move past it
+                                let line = ed.buffer.get_line(ed.cursor.line);
+                                let next_char = line.chars().nth(ed.cursor.col);
+                                let is_closing = matches!(c, ')' | ']' | '}' | '"' | '\'' | '`');
+                                if is_closing && next_char == Some(c) {
+                                    ed.cursor.col += 1; // skip over
+                                    continue;
+                                }
                                 ed.insert_char(c);
+                                // Auto-close brackets (Zed: BracketPair auto-close)
                                 if let Some(cc) = match c {
                                     '(' => Some(')'), '[' => Some(']'), '{' => Some('}'),
-                                    '"' => Some('"'), '\'' => Some('\''),
                                     _ => None
                                 } {
                                     let (l, co) = (ed.cursor.line, ed.cursor.col);
                                     ed.buffer.insert_char(l, co, cc);
+                                }
+                                // Auto-close quotes (Zed: only if count is even)
+                                if matches!(c, '"' | '\'' | '`') {
+                                    let line = ed.buffer.get_line(ed.cursor.line);
+                                    let quote_count = line.chars().filter(|&ch| ch == c).count();
+                                    // If odd count after insert, we just inserted opening — add closing
+                                    if quote_count % 2 == 1 {
+                                        let (l, co) = (ed.cursor.line, ed.cursor.col);
+                                        ed.buffer.insert_char(l, co, c);
+                                    }
                                 }
                             }
                             ed.scroll_into_view();

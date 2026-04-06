@@ -695,7 +695,7 @@ impl App {
         }
     }
 
-    /// Trigger autocomplete
+    /// Trigger autocomplete — words + snippets (Zed-style)
     pub fn trigger_autocomplete(&mut self) {
         let prefix = self.active_editor().word_at_cursor();
         if prefix.len() < 2 {
@@ -703,7 +703,25 @@ impl App {
             self.autocomplete_suggestions.clear();
             return;
         }
-        let suggestions = self.active_editor().collect_words(&prefix);
+        let mut suggestions = Vec::new();
+
+        // Snippets first (higher priority)
+        let lang = self.active_editor().file_path.as_ref()
+            .map(|p| crate::syntax::detect_language(p).to_string())
+            .unwrap_or("text".into());
+        let snippets = crate::snippets::get_snippets(&lang);
+        for snip in &snippets {
+            if snip.trigger.starts_with(&prefix) && snip.trigger != prefix {
+                suggestions.push(format!("⚡ {}", snip.label));
+            }
+        }
+
+        // Then words from buffer
+        let words = self.active_editor().collect_words(&prefix);
+        for w in words {
+            suggestions.push(w);
+        }
+
         if suggestions.is_empty() {
             self.show_autocomplete = false;
             self.autocomplete_suggestions.clear();
@@ -714,22 +732,76 @@ impl App {
         }
     }
 
-    /// Accept current autocomplete suggestion
+    /// Accept current autocomplete suggestion (word or snippet)
     pub fn accept_autocomplete(&mut self) {
         if !self.show_autocomplete || self.autocomplete_suggestions.is_empty() {
             return;
         }
         let suggestion = self.autocomplete_suggestions[self.autocomplete_selected].clone();
         let prefix = self.active_editor().word_at_cursor();
-        let suffix = &suggestion[prefix.len()..];
-        let ed = self.active_editor_mut();
-        for c in suffix.chars() {
-            ed.buffer.insert_char(ed.cursor.line, ed.cursor.col, c);
-            ed.cursor.col += 1;
+
+        // Check if it's a snippet (starts with ⚡)
+        if suggestion.starts_with("⚡ ") {
+            let label = &suggestion[4..]; // skip "⚡ "
+            let lang = self.active_editor().file_path.as_ref()
+                .map(|p| crate::syntax::detect_language(p).to_string())
+                .unwrap_or("text".into());
+            let snippets = crate::snippets::get_snippets(&lang);
+            if let Some(snip) = snippets.iter().find(|s| s.label == label) {
+                let ed = self.active_editor_mut();
+                ed.save_undo_snapshot();
+                // Delete prefix (the trigger word)
+                for _ in 0..prefix.len() {
+                    ed.cursor.col -= 1;
+                    ed.buffer.delete_char(ed.cursor.line, ed.cursor.col);
+                }
+                // Get current indent
+                let indent = ed.buffer.get_line_indent(ed.cursor.line);
+                let (expanded, cursor_offset) = crate::snippets::expand_snippet(snip.body, &indent);
+                let insert_line = ed.cursor.line;
+                let insert_col = ed.cursor.col;
+                // Insert expanded text
+                let mut line = insert_line;
+                let mut col = insert_col;
+                for c in expanded.chars() {
+                    if c == '\n' {
+                        ed.buffer.insert_newline(line, col);
+                        line += 1;
+                        col = 0;
+                    } else {
+                        ed.buffer.insert_char(line, col, c);
+                        col += 1;
+                    }
+                }
+                // Position cursor at $0
+                let mut offset = 0;
+                let mut target_line = insert_line;
+                let mut target_col = insert_col;
+                for c in expanded.chars() {
+                    if offset >= cursor_offset { break; }
+                    if c == '\n' { target_line += 1; target_col = 0; }
+                    else { target_col += 1; }
+                    offset += c.len_utf8();
+                }
+                ed.cursor.line = target_line;
+                ed.cursor.col = target_col;
+                ed.is_dirty = true;
+                ed.diagnostics_dirty = true;
+                ed.last_edit_time = Some(std::time::Instant::now());
+                ed.scroll_into_view();
+            }
+        } else {
+            // Regular word completion
+            let suffix = &suggestion[prefix.len()..];
+            let ed = self.active_editor_mut();
+            for c in suffix.chars() {
+                ed.buffer.insert_char(ed.cursor.line, ed.cursor.col, c);
+                ed.cursor.col += 1;
+            }
+            ed.is_dirty = true;
+            ed.diagnostics_dirty = true;
+            ed.last_edit_time = Some(std::time::Instant::now());
         }
-        ed.is_dirty = true;
-        ed.diagnostics_dirty = true;
-        ed.last_edit_time = Some(std::time::Instant::now());
         self.show_autocomplete = false;
         self.autocomplete_suggestions.clear();
     }

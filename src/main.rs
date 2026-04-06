@@ -5,6 +5,7 @@ mod git;
 mod gui;
 mod search;
 mod settings;
+mod snippets;
 mod syntax;
 mod terminal;
 
