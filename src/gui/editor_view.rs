@@ -987,7 +987,7 @@ impl CodeEditorApp {
         let content_w = 520.0_f32.min(avail_w - 60.0);
         let side_pad = (avail_w - content_w) / 2.0;
 
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        {
             ui.add_space(ui.available_height() * 0.06);
 
             // ── Header ──
@@ -1051,7 +1051,7 @@ impl CodeEditorApp {
                 });
                 ui.add_space(6.0);
 
-                for project in &recent {
+                for project in recent.iter().take(5) {
                     let short_path = project.path.replace(&home_dir, "~");
                     let label_text = format!("{}  {}", project.name, short_path);
 
@@ -1135,8 +1135,7 @@ impl CodeEditorApp {
                 });
             });
 
-            ui.add_space(40.0);
-        });
+        }
 
         // Deferred actions
         if let Some(path) = open_project {
