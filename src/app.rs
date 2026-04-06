@@ -4,6 +4,7 @@ use crate::git::{GitManager, GitStatus};
 use crate::search;
 use crate::settings::Settings;
 use crate::terminal::TerminalManager;
+use notify::Watcher;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -121,6 +122,10 @@ pub struct App {
 
     // Debounce: last search trigger time
     pub last_search_trigger: Option<std::time::Instant>,
+
+    // File watcher
+    pub file_watcher_rx: Option<std::sync::mpsc::Receiver<String>>,
+    pub _file_watcher: Option<notify::RecommendedWatcher>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +214,8 @@ impl App {
             search_rx: None,
             git_rx: None,
             last_search_trigger: None,
+            file_watcher_rx: None,
+            _file_watcher: None,
         }
     }
 
@@ -253,6 +260,8 @@ impl App {
         self.status_message = format!("Opened: {}", name);
         // Save to recent projects
         self.settings.add_recent_project(&path);
+        // Start file watcher
+        self.start_file_watcher(&path);
         // Git status in background
         self.refresh_git_async();
     }
@@ -532,6 +541,59 @@ impl App {
             }
             Err(e) => {
                 self.status_message = format!("Terminal error: {}", e);
+            }
+        }
+    }
+
+    pub fn start_file_watcher(&mut self, path: &str) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = path.to_string();
+        let result = notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = event {
+                if matches!(event.kind,
+                    notify::EventKind::Create(_) |
+                    notify::EventKind::Remove(_) |
+                    notify::EventKind::Modify(notify::event::ModifyKind::Data(_))
+                ) {
+                    for p in &event.paths {
+                        let _ = tx.send(p.to_string_lossy().to_string());
+                    }
+                }
+            }
+        });
+        if let Ok(mut watcher) = result {
+            let _ = watcher.watch(std::path::Path::new(&path), notify::RecursiveMode::Recursive);
+            self.file_watcher_rx = Some(rx);
+            self._file_watcher = Some(watcher);
+        }
+    }
+
+    /// Check file watcher for external changes
+    pub fn poll_file_watcher(&mut self) {
+        let mut changed_files: Vec<String> = Vec::new();
+        if let Some(ref rx) = self.file_watcher_rx {
+            while let Ok(path) = rx.try_recv() {
+                changed_files.push(path);
+            }
+        }
+        if changed_files.is_empty() { return; }
+
+        // Refresh file tree if any file changed
+        self.file_tree.refresh();
+
+        // Reload open editors if file changed externally and not dirty
+        for changed_path in &changed_files {
+            for editor in &mut self.editors {
+                if let Some(ref fp) = editor.file_path {
+                    if fp == changed_path && !editor.is_dirty {
+                        if let Ok(content) = std::fs::read_to_string(fp) {
+                            editor.buffer.rope = ropey::Rope::from_str(&content);
+                            editor.diagnostics_dirty = true;
+                            editor.highlight_cache.clear();
+                            editor.highlight_dirty_from = Some(0);
+                        }
+                    }
+                }
             }
         }
     }

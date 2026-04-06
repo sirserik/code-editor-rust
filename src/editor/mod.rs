@@ -122,6 +122,36 @@ impl Editor {
         }
     }
 
+    /// Detect indent style from file content (Zed-style)
+    pub fn detect_indent(&self) -> usize {
+        let mut space_counts = [0u32; 9]; // index = indent size (2,3,4,8)
+        let mut tab_count = 0u32;
+        let sample = self.buffer.line_count().min(100);
+        for li in 0..sample {
+            let line = self.buffer.get_line(li);
+            if line.is_empty() { continue; }
+            let first_char = line.chars().next().unwrap_or(' ');
+            if first_char == '\t' {
+                tab_count += 1;
+            } else if first_char == ' ' {
+                let spaces = line.chars().take_while(|c| *c == ' ').count();
+                if spaces >= 2 && spaces <= 8 {
+                    space_counts[spaces] += 1;
+                }
+            }
+        }
+        if tab_count > space_counts.iter().sum::<u32>() {
+            return 4; // tab = 4 visual spaces
+        }
+        // Find most common indent
+        let best = space_counts.iter().enumerate()
+            .skip(2)
+            .max_by_key(|(_, &c)| c)
+            .map(|(i, _)| i)
+            .unwrap_or(4);
+        best
+    }
+
     pub fn file_name(&self) -> String {
         self.file_path
             .as_ref()

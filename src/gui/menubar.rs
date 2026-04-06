@@ -182,6 +182,34 @@ impl CodeEditorApp {
                                     self.app.active_editor = i;
                                     self.app.focus = Focus::Editor;
                                 }
+                                // Tab context menu
+                                label_resp.context_menu(|ui| {
+                                    if ui.button("Close").clicked() { tab_to_close = Some(i); ui.close_menu(); }
+                                    if self.app.editors.len() > 1 {
+                                        if ui.button("Close Others").clicked() {
+                                            // Keep only tab i
+                                            let kept = self.app.editors.remove(i);
+                                            self.app.editors.clear();
+                                            self.app.editors.push(kept);
+                                            self.app.active_editor = 0;
+                                            ui.close_menu();
+                                        }
+                                        if i + 1 < self.app.editors.len() {
+                                            if ui.button("Close to the Right").clicked() {
+                                                self.app.editors.truncate(i + 1);
+                                                if self.app.active_editor > i { self.app.active_editor = i; }
+                                                ui.close_menu();
+                                            }
+                                        }
+                                        ui.separator();
+                                        if ui.button("Close All").clicked() {
+                                            self.app.editors.clear();
+                                            self.app.editors.push(crate::editor::Editor::new());
+                                            self.app.active_editor = 0;
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
                                 // Close button with hover state
                                 let close_resp = ui.add(
                                     egui::Button::new(

@@ -123,8 +123,9 @@ impl eframe::App for CodeEditorApp {
         self.render_editor(ctx);
         self.render_drag_overlay(ctx);
         self.render_overlays(ctx);
-        // Auto-save tick
+        // Auto-save tick & file watcher
         self.app.tick();
+        self.app.poll_file_watcher();
         // Compute git diff for active editor — throttled to once per second
         {
             let ed = &mut self.app.editors[self.app.active_editor];

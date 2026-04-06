@@ -16,6 +16,7 @@ git2 = "0.19"
 # File system
 walkdir = "2"
 regex = "1"
+notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
