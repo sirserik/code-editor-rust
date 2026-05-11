@@ -8,7 +8,7 @@ mod terminal_view;
 use crate::app::{App, Focus, SidebarTab, PaletteAction};
 use crate::settings::{Theme, ThemeColors};
 use crate::syntax;
-use egui::{self, Color32, FontId, RichText, Vec2, Rect, Pos2, Stroke, Rounding};
+use egui::{self, Color32, CornerRadius, FontId, RichText, Vec2, Rect, Pos2, Stroke};
 
 pub struct CodeEditorApp {
     pub app: App,
@@ -24,6 +24,11 @@ pub struct CodeEditorApp {
     // Cached git blame
     blame_cache: Option<(usize, String)>, // (line, blame_text)
     blame_cache_line: usize,
+    // Perf HUD — rolling frame times
+    pub(crate) frame_times_ms: std::collections::VecDeque<f32>,
+    pub(crate) section_times_ms: [f32; 5], // [menubar, tabs, status, sidebar, editor]
+    // Cache last applied zoom factor so we don't invalidate egui's glyph cache every frame
+    last_zoom: f32,
 }
 
 pub(crate) const DEFAULT_FONT_SIZE: f32 = 14.0;
@@ -127,13 +132,17 @@ impl CodeEditorApp {
             last_frame_time: now,
             blame_cache: None,
             blame_cache_line: usize::MAX,
+            frame_times_ms: std::collections::VecDeque::with_capacity(60),
+            section_times_ms: [0.0; 5],
+            last_zoom: 0.0,
         }
     }
 }
 
 impl eframe::App for CodeEditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let now = std::time::Instant::now();
+        let frame_start = std::time::Instant::now();
+        let now = frame_start;
 
         // ── Zed-style input rate tracking ──
         // Detect if user is actively interacting
@@ -146,9 +155,14 @@ impl eframe::App for CodeEditorApp {
             self.dirty = true;
         }
 
-        // ── Global UI zoom — scales everything (Zed-style) ──
-        let ui_scale = self.app.settings.font_size / DEFAULT_FONT_SIZE;
-        ctx.set_zoom_factor(ui_scale);
+        // ── UI zoom is independent of editor font size (JetBrains style) ──
+        // Previously: set_zoom_factor was tied to editor font_size, which double-scaled the
+        // editor text (mono_sized(font_size) × zoom_factor) and made UI scale unpredictably.
+        // Now: editor font scales via mono_sized(font_size); UI stays at 1.0 (system DPI).
+        if (1.0_f32 - self.last_zoom).abs() > 0.001 {
+            ctx.set_zoom_factor(1.0);
+            self.last_zoom = 1.0;
+        }
 
         // ── Theme refresh (check system theme every ~5s for SystemDefault) ──
         let resolved_theme = self.app.settings.theme.resolved();
@@ -185,12 +199,24 @@ impl eframe::App for CodeEditorApp {
 
         // ── Render UI ──
         self.handle_keys(ctx);
+        let t0 = std::time::Instant::now();
         self.render_menu_bar(ctx);
+        let mb_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        let t1 = std::time::Instant::now();
         self.render_tabs(ctx);
+        let tabs_ms = t1.elapsed().as_secs_f32() * 1000.0;
+        let t2 = std::time::Instant::now();
         self.render_status(ctx);
+        let status_ms = t2.elapsed().as_secs_f32() * 1000.0;
         if self.app.show_terminal { self.render_terminal(ctx); }
+        let t3 = std::time::Instant::now();
+        self.render_activity_bar(ctx);
         if self.app.show_sidebar { self.render_sidebar(ctx); }
+        let sb_ms = t3.elapsed().as_secs_f32() * 1000.0;
+        let t4 = std::time::Instant::now();
         self.render_editor(ctx);
+        let ed_ms = t4.elapsed().as_secs_f32() * 1000.0;
+        self.section_times_ms = [mb_ms, tabs_ms, status_ms, sb_ms, ed_ms];
         self.render_drag_overlay(ctx);
         self.render_overlays(ctx);
 
@@ -267,6 +293,11 @@ impl eframe::App for CodeEditorApp {
         }
 
         self.last_frame_time = now;
+
+        // ── Perf HUD: record CPU-side frame time ──
+        let elapsed_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+        if self.frame_times_ms.len() == 60 { self.frame_times_ms.pop_front(); }
+        self.frame_times_ms.push_back(elapsed_ms);
 
         // ── Zed-style repaint scheduling ──
         // Key insight from Zed: only request repaint when actually needed

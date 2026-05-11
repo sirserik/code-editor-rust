@@ -279,20 +279,6 @@ impl FileTree {
         false
     }
 
-    pub fn move_up(&mut self) {
-        if self.selected_index > 0 {
-            self.selected_index -= 1;
-        }
-        self.scroll_into_view();
-    }
-
-    pub fn move_down(&mut self) {
-        if self.selected_index + 1 < self.flat_entries.len() {
-            self.selected_index += 1;
-        }
-        self.scroll_into_view();
-    }
-
     pub fn scroll_into_view(&mut self) {
         if self.selected_index < self.scroll_offset {
             self.scroll_offset = self.selected_index;
@@ -332,28 +318,6 @@ impl FileTree {
     pub fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
         self.refresh();
-    }
-
-    pub fn create_file(&mut self, path: &str) -> Result<(), String> {
-        // Create parent dirs if needed
-        if let Some(parent) = Path::new(path).parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(path, "").map_err(|e| e.to_string())?;
-        self.refresh();
-        // Expand parent folder so the new file is visible
-        if let Some(parent) = Path::new(path).parent() {
-            self.ensure_expanded(&parent.to_string_lossy());
-        }
-        // Select the new file
-        for (i, entry) in self.flat_entries.iter().enumerate() {
-            if entry.path == path {
-                self.selected_index = i;
-                self.scroll_into_view();
-                break;
-            }
-        }
-        Ok(())
     }
 
     pub fn create_directory(&mut self, path: &str) -> Result<(), String> {

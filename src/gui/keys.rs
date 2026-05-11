@@ -8,6 +8,7 @@ impl CodeEditorApp {
         let quit = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Q));
         let new_file = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N));
         let close_tab = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W));
+        let close_project = ctx.input_mut(|i| i.consume_key(egui::Modifiers { command: true, shift: true, ..Default::default() }, egui::Key::W));
         let toggle_sb = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B));
         let palette = ctx.input_mut(|i| i.consume_key(egui::Modifiers { command: true, shift: true, ..Default::default() }, egui::Key::P));
         let quick_open = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::P));
@@ -78,7 +79,8 @@ impl CodeEditorApp {
             }
         }
         if new_file { self.app.editors.push(crate::editor::Editor::new()); self.app.active_editor = self.app.editors.len() - 1; self.app.focus = Focus::Editor; }
-        if close_tab { let i = self.app.active_editor; self.app.close_tab(i); }
+        if close_project { self.app.close_project(); }
+        else if close_tab { let i = self.app.active_editor; self.app.close_tab(i); }
         if toggle_sb { self.app.show_sidebar = !self.app.show_sidebar; }
         if find {
             self.app.focus = Focus::FindReplace;

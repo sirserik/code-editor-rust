@@ -9,21 +9,18 @@ use notify::Watcher;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
     Editor,
-    FileTree,
     Terminal,
     CommandPalette,
     QuickOpen,
     FindReplace,
     GoToLine,
     GlobalSearch,
-    GitPanel,
     NewFileDialog,
     NewFolderDialog,
     RenameDialog,
     DeleteConfirm,
     CommitInput,
     SaveAsDialog,
-    Autocomplete,
     About,
 }
 
@@ -45,12 +42,8 @@ pub struct App {
     pub focus: Focus,
     pub show_sidebar: bool,
     pub show_terminal: bool,
-    pub sidebar_width: u16,
-    pub terminal_height: u16,
     pub sidebar_tab: SidebarTab,
     pub status_message: String,
-    pub width: u16,
-    pub height: u16,
 
     // Command palette
     pub palette_input: String,
@@ -76,13 +69,20 @@ pub struct App {
 
     // Global search
     pub global_search_input: String,
+    pub global_search_replace: String,
+    pub global_search_show_replace: bool,
     pub global_search_results: Vec<search::SearchResult>,
     pub global_search_selected: usize,
     pub file_search_results: Vec<search::FileMatch>,
 
     // Git commit
     pub commit_message: String,
-    pub git_selected: usize,
+    // Git branch popup state
+    pub branch_popup_open: bool,
+    pub branch_popup_query: String,
+    pub branch_popup_anchor: Option<egui::Pos2>,
+    pub branch_popup_new_mode: bool,
+    pub branch_popup_new_name: String,
 
     // Terminal
     pub active_terminal: Option<u32>,
@@ -136,7 +136,6 @@ pub struct App {
 #[derive(Debug, Clone)]
 pub struct PaletteItem {
     pub name: String,
-    pub shortcut: String,
     pub action: PaletteAction,
 }
 
@@ -178,12 +177,8 @@ impl App {
             focus: Focus::Editor,
             show_sidebar: true,
             show_terminal: false,
-            sidebar_width: 32,
-            terminal_height: 12,
             sidebar_tab: SidebarTab::Files,
             status_message: String::from("Ready  |  Ctrl+Shift+P: commands  |  Ctrl+P: quick open"),
-            width: 80,
-            height: 24,
             palette_input: String::new(),
             palette_items: Self::build_palette_items(),
             palette_selected: 0,
@@ -199,11 +194,17 @@ impl App {
             find_focus_replace: false,
             goto_input: String::new(),
             global_search_input: String::new(),
+            global_search_replace: String::new(),
+            global_search_show_replace: false,
             global_search_results: Vec::new(),
             global_search_selected: 0,
             file_search_results: Vec::new(),
             commit_message: String::new(),
-            git_selected: 0,
+            branch_popup_open: false,
+            branch_popup_query: String::new(),
+            branch_popup_anchor: None,
+            branch_popup_new_mode: false,
+            branch_popup_new_name: String::new(),
             active_terminal: None,
             dialog_input: String::new(),
             dialog_context_path: String::new(),
@@ -229,24 +230,24 @@ impl App {
 
     fn build_palette_items() -> Vec<PaletteItem> {
         vec![
-            PaletteItem { name: "New File".into(), shortcut: "Ctrl+N".into(), action: PaletteAction::NewFile },
-            PaletteItem { name: "Save".into(), shortcut: "Ctrl+S".into(), action: PaletteAction::Save },
-            PaletteItem { name: "Save All".into(), shortcut: "Ctrl+Shift+S".into(), action: PaletteAction::SaveAll },
-            PaletteItem { name: "Close Tab".into(), shortcut: "Ctrl+W".into(), action: PaletteAction::CloseTab },
-            PaletteItem { name: "Quick Open".into(), shortcut: "Ctrl+P".into(), action: PaletteAction::QuickOpen },
-            PaletteItem { name: "Find in File".into(), shortcut: "Ctrl+F".into(), action: PaletteAction::Find },
-            PaletteItem { name: "Find in Project".into(), shortcut: "Ctrl+Shift+F".into(), action: PaletteAction::FindInProject },
-            PaletteItem { name: "Go to Line".into(), shortcut: "Ctrl+G".into(), action: PaletteAction::GoToLine },
-            PaletteItem { name: "Toggle Sidebar".into(), shortcut: "Ctrl+B".into(), action: PaletteAction::ToggleSidebar },
-            PaletteItem { name: "Toggle Terminal".into(), shortcut: "Ctrl+`".into(), action: PaletteAction::ToggleTerminal },
-            PaletteItem { name: "Toggle Theme (Dark/Light)".into(), shortcut: "".into(), action: PaletteAction::ToggleTheme },
-            PaletteItem { name: "Toggle Word Wrap".into(), shortcut: "".into(), action: PaletteAction::ToggleWordWrap },
-            PaletteItem { name: "Toggle Line Numbers".into(), shortcut: "".into(), action: PaletteAction::ToggleLineNumbers },
-            PaletteItem { name: "Toggle Hidden Files (.env, .git...)".into(), shortcut: "".into(), action: PaletteAction::ToggleHiddenFiles },
-            PaletteItem { name: "Toggle Minimap".into(), shortcut: "".into(), action: PaletteAction::ToggleMinimap },
-            PaletteItem { name: "Toggle Breadcrumbs".into(), shortcut: "".into(), action: PaletteAction::ToggleBreadcrumbs },
-            PaletteItem { name: "Toggle Auto-Save".into(), shortcut: "".into(), action: PaletteAction::ToggleAutoSave },
-            PaletteItem { name: "Quit".into(), shortcut: "Ctrl+Q".into(), action: PaletteAction::Quit },
+            PaletteItem { name: "New File".into(), action: PaletteAction::NewFile },
+            PaletteItem { name: "Save".into(), action: PaletteAction::Save },
+            PaletteItem { name: "Save All".into(), action: PaletteAction::SaveAll },
+            PaletteItem { name: "Close Tab".into(), action: PaletteAction::CloseTab },
+            PaletteItem { name: "Quick Open".into(), action: PaletteAction::QuickOpen },
+            PaletteItem { name: "Find in File".into(), action: PaletteAction::Find },
+            PaletteItem { name: "Find in Project".into(), action: PaletteAction::FindInProject },
+            PaletteItem { name: "Go to Line".into(), action: PaletteAction::GoToLine },
+            PaletteItem { name: "Toggle Sidebar".into(), action: PaletteAction::ToggleSidebar },
+            PaletteItem { name: "Toggle Terminal".into(), action: PaletteAction::ToggleTerminal },
+            PaletteItem { name: "Toggle Theme (Dark/Light)".into(), action: PaletteAction::ToggleTheme },
+            PaletteItem { name: "Toggle Word Wrap".into(), action: PaletteAction::ToggleWordWrap },
+            PaletteItem { name: "Toggle Line Numbers".into(), action: PaletteAction::ToggleLineNumbers },
+            PaletteItem { name: "Toggle Hidden Files (.env, .git...)".into(), action: PaletteAction::ToggleHiddenFiles },
+            PaletteItem { name: "Toggle Minimap".into(), action: PaletteAction::ToggleMinimap },
+            PaletteItem { name: "Toggle Breadcrumbs".into(), action: PaletteAction::ToggleBreadcrumbs },
+            PaletteItem { name: "Toggle Auto-Save".into(), action: PaletteAction::ToggleAutoSave },
+            PaletteItem { name: "Quit".into(), action: PaletteAction::Quit },
         ]
     }
 
@@ -273,6 +274,32 @@ impl App {
         self.start_file_watcher(&path);
         // Git status in background
         self.refresh_git_async();
+    }
+
+    /// Close the current project: drops file tree, all editors, git state, watcher.
+    /// Leaves the app on the welcome screen ready to open another project.
+    pub fn close_project(&mut self) {
+        self.file_tree.root_path = None;
+        self.file_tree.root = None;
+        self.file_tree.flat_entries.clear();
+        self.file_tree.selected_index = 0;
+        self.git_status = None;
+        self.git_rx = None;
+        self.file_watcher_rx = None;
+        self._file_watcher = None;
+        self.file_tree_rx = None;
+        self.global_search_input.clear();
+        self.global_search_results.clear();
+        self.file_search_results.clear();
+        self.editors.clear();
+        self.editors.push(Editor::new());
+        self.active_editor = 0;
+        self.show_terminal = false;
+        if let Some(id) = self.active_terminal.take() {
+            let _ = id; // terminal threads will exit when the manager drops
+        }
+        self.focus = Focus::Editor;
+        self.status_message = "Project closed".into();
     }
 
     pub fn open_file(&mut self, path: &str) {
@@ -685,14 +712,20 @@ impl App {
         self.update_find_matches();
     }
 
-    /// Auto-save: save dirty files after 2 seconds of inactivity
+    /// Auto-save: save dirty files after 2 seconds of inactivity.
+    /// Writes happen on a background thread so the render loop never blocks on fs IO.
     pub fn auto_save_tick(&mut self) {
         if !self.auto_save_enabled { return; }
         for editor in &mut self.editors {
             if editor.is_dirty && editor.file_path.is_some() {
                 if let Some(last_edit) = editor.last_edit_time {
                     if last_edit.elapsed().as_secs() >= 2 {
-                        let _ = editor.save();
+                        let path = editor.file_path.clone().unwrap();
+                        let content = editor.buffer.text();
+                        std::thread::spawn(move || {
+                            let _ = std::fs::write(&path, content);
+                        });
+                        editor.is_dirty = false;
                         editor.last_edit_time = None;
                     }
                 }
@@ -819,40 +852,6 @@ impl App {
 // Remaining code after GUI migration removed
 // Git panel helpers for GUI
 impl App {
-    pub fn git_stage_selected(&mut self) {
-        let (file_path, root) = match (&self.git_status, &self.file_tree.root_path) {
-            (Some(status), Some(root)) => match status.files.get(self.git_selected) {
-                Some(file) => (file.path.clone(), root.clone()),
-                None => return,
-            },
-            _ => return,
-        };
-        match self.git.stage_file(&root, &file_path) {
-            Ok(_) => {
-                self.status_message = format!("Staged: {}", file_path);
-                self.refresh_git_status();
-            }
-            Err(e) => self.status_message = format!("Error: {}", e),
-        }
-    }
-
-    pub fn git_unstage_selected(&mut self) {
-        let (file_path, root) = match (&self.git_status, &self.file_tree.root_path) {
-            (Some(status), Some(root)) => match status.files.get(self.git_selected) {
-                Some(file) => (file.path.clone(), root.clone()),
-                None => return,
-            },
-            _ => return,
-        };
-        match self.git.unstage_file(&root, &file_path) {
-            Ok(_) => {
-                self.status_message = format!("Unstaged: {}", file_path);
-                self.refresh_git_status();
-            }
-            Err(e) => self.status_message = format!("Error: {}", e),
-        }
-    }
-
     pub fn git_stage_all(&mut self) {
         let root = match &self.file_tree.root_path {
             Some(r) => r.clone(),

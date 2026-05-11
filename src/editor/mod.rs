@@ -4,7 +4,6 @@ mod cursor;
 pub use buffer::Buffer;
 pub use cursor::Cursor;
 
-use ropey::Rope;
 use std::collections::{HashMap, HashSet};
 
 use crate::syntax::SyntaxError;
@@ -23,7 +22,6 @@ pub struct Editor {
     pub file_path: Option<String>,
     pub is_dirty: bool,
     pub viewport_height: usize,
-    pub viewport_width: usize,
     pub selection: Option<Selection>,
     // Undo/Redo: store snapshots
     undo_stack: Vec<(String, usize, usize)>, // (content, cursor_line, cursor_col)
@@ -31,6 +29,7 @@ pub struct Editor {
     undo_counter: usize, // track changes for periodic snapshots
     // Code folding: maps fold start line -> fold end line
     pub fold_ranges: HashMap<usize, usize>,
+    pub fold_ranges_computed: bool, // sticky flag to avoid re-running scan when ranges are empty
     pub folded: HashSet<usize>, // lines that are fold-start and currently folded
     // Syntax diagnostics
     pub diagnostics: Vec<SyntaxError>,
@@ -66,12 +65,12 @@ impl Editor {
             file_path: None,
             is_dirty: false,
             viewport_height: 24,
-            viewport_width: 80,
             selection: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             undo_counter: 0,
             fold_ranges: HashMap::new(),
+            fold_ranges_computed: false,
             folded: HashSet::new(),
             diagnostics: Vec::new(),
             diagnostics_dirty: true,
@@ -95,12 +94,12 @@ impl Editor {
             file_path: Some(path.to_string()),
             is_dirty: false,
             viewport_height: 24,
-            viewport_width: 80,
             selection: None,
             undo_stack: vec![(initial_content.clone(), 0, 0)],
             redo_stack: Vec::new(),
             undo_counter: 0,
             fold_ranges: HashMap::new(),
+            fold_ranges_computed: false,
             folded: HashSet::new(),
             diagnostics: Vec::new(),
             diagnostics_dirty: true,
@@ -122,9 +121,10 @@ impl Editor {
         }
     }
 
-    /// Detect indent style from file content (Zed-style)
+    /// Detect indent size from file content (Zed-style): samples up to first 100 lines,
+    /// returns most-common leading-space count (2..=8) or 4 if tabs dominate.
     pub fn detect_indent(&self) -> usize {
-        let mut space_counts = [0u32; 9]; // index = indent size (2,3,4,8)
+        let mut space_counts = [0u32; 9];
         let mut tab_count = 0u32;
         let sample = self.buffer.line_count().min(100);
         for li in 0..sample {
@@ -135,21 +135,20 @@ impl Editor {
                 tab_count += 1;
             } else if first_char == ' ' {
                 let spaces = line.chars().take_while(|c| *c == ' ').count();
-                if spaces >= 2 && spaces <= 8 {
+                if (2..=8).contains(&spaces) {
                     space_counts[spaces] += 1;
                 }
             }
         }
         if tab_count > space_counts.iter().sum::<u32>() {
-            return 4; // tab = 4 visual spaces
+            return 4;
         }
-        // Find most common indent
-        let best = space_counts.iter().enumerate()
+        space_counts.iter().enumerate()
             .skip(2)
+            .filter(|(_, &c)| c > 0)
             .max_by_key(|(_, &c)| c)
             .map(|(i, _)| i)
-            .unwrap_or(4);
-        best
+            .unwrap_or(4)
     }
 
     pub fn file_name(&self) -> String {
@@ -207,7 +206,8 @@ impl Editor {
     }
 
     pub fn insert_tab(&mut self) {
-        for _ in 0..4 {
+        let width = self.detect_indent();
+        for _ in 0..width {
             self.insert_char(' ');
         }
     }
@@ -508,15 +508,6 @@ impl Editor {
         Some(self.buffer.get_range(sel.start_line, sel.start_col, sel.end_line, sel.end_col))
     }
 
-    pub fn delete_selection(&mut self) {
-        if let Some(sel) = self.selection.take() {
-            self.buffer.delete_range(sel.start_line, sel.start_col, sel.end_line, sel.end_col);
-            self.cursor.line = sel.start_line;
-            self.cursor.col = sel.start_col;
-            self.is_dirty = true; self.diagnostics_dirty = true;
-        }
-    }
-
     pub fn toggle_comment(&mut self) {
         // Simple line comment toggle
         let line = self.buffer.get_line(self.cursor.line);
@@ -654,10 +645,6 @@ impl Editor {
         }
     }
 
-    pub fn rope(&self) -> &Rope {
-        &self.buffer.rope
-    }
-
     pub fn line_count(&self) -> usize {
         self.buffer.line_count()
     }
@@ -789,6 +776,7 @@ impl Editor {
     /// Compute fold ranges by matching { } brackets across lines
     pub fn compute_fold_ranges(&mut self) {
         self.fold_ranges.clear();
+        self.fold_ranges_computed = true;
         let lc = self.buffer.line_count();
         let mut stack: Vec<usize> = Vec::new(); // stack of line numbers where '{' opened
 

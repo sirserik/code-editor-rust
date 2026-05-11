@@ -10,7 +10,6 @@ pub enum HighlightKind {
     Comment,
     Operator,
     Punctuation,
-    Variable,
     Constant,
     Attribute,
     Tag,
@@ -30,7 +29,6 @@ impl HighlightKind {
                 HighlightKind::Comment => Color32::from_rgb(128, 128, 128),   // Gray comments
                 HighlightKind::Operator => Color32::from_rgb(187, 187, 187),  // Default text
                 HighlightKind::Punctuation => Color32::from_rgb(187, 187, 187), // Default text
-                HighlightKind::Variable => Color32::from_rgb(152, 118, 170),  // Purple variables
                 HighlightKind::Constant => Color32::from_rgb(152, 118, 170),  // Purple constants
                 HighlightKind::Attribute => Color32::from_rgb(187, 181, 41),  // Yellow annotations
                 HighlightKind::Tag => Color32::from_rgb(232, 191, 106),       // Gold tags
@@ -47,7 +45,6 @@ impl HighlightKind {
                 HighlightKind::Comment => Color32::from_rgb(138, 138, 138),   // JB gray comments
                 HighlightKind::Operator => Color32::from_rgb(40, 40, 40),     // Dark operators
                 HighlightKind::Punctuation => Color32::from_rgb(40, 40, 40),  // Dark punctuation
-                HighlightKind::Variable => Color32::from_rgb(100, 0, 128),    // JB purple variables
                 HighlightKind::Constant => Color32::from_rgb(100, 0, 128),    // JB purple constants
                 HighlightKind::Attribute => Color32::from_rgb(148, 115, 0),   // JB dark gold annotations
                 HighlightKind::Tag => Color32::from_rgb(0, 51, 179),         // JB blue tags
@@ -229,6 +226,14 @@ pub fn detect_language_from_content(first_line: &str) -> Option<&'static str> {
     if line.contains("php") { return Some("php"); }
     if line.contains("lua") { return Some("lua"); }
     None
+}
+
+/// Detect language using file path, falling back to first-line shebang if extension yields "text".
+/// Pass the first line directly to avoid cloning the whole buffer for shebang detection.
+pub fn detect_language_with_first_line<'a>(path: &'a str, first_line: &str) -> &'a str {
+    let by_ext = detect_language(path);
+    if by_ext != "text" { return by_ext; }
+    detect_language_from_content(first_line).unwrap_or("text")
 }
 
 #[cfg(test)]
@@ -876,7 +881,6 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
     let mut string_char: char = '"';
     let mut in_line_comment = false;
     let mut in_block_comment = false;
-    let mut prev_char = '\0';
     let mut line = 0usize;
     let mut col = 0usize;
 
@@ -892,7 +896,6 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
             line += 1;
             col = 0;
             in_line_comment = false;
-            prev_char = ch;
             i += 1;
             continue;
         }
@@ -902,7 +905,6 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
             in_block_comment = true;
             i += 2;
             col += 2;
-            prev_char = '*';
             continue;
         }
 
@@ -911,12 +913,10 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
             in_block_comment = false;
             i += 2;
             col += 2;
-            prev_char = '/';
             continue;
         }
 
         if in_block_comment || in_line_comment {
-            prev_char = ch;
             i += 1;
             col += 1;
             continue;
@@ -925,7 +925,6 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
         // Line comment
         if !in_string && ch == '/' && i + 1 < len && chars[i + 1] == '/' {
             in_line_comment = true;
-            prev_char = ch;
             i += 1;
             col += 1;
             continue;
@@ -933,7 +932,6 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
         if !in_string && ch == '#' {
             // Python/shell/yaml comments (but not inside strings)
             in_line_comment = true;
-            prev_char = ch;
             i += 1;
             col += 1;
             continue;
@@ -943,7 +941,6 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
         if !in_string && (ch == '"' || ch == '\'' || ch == '`') {
             in_string = true;
             string_char = ch;
-            prev_char = ch;
             i += 1;
             col += 1;
             continue;
@@ -953,13 +950,11 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
                 // Skip escaped char
                 i += 2;
                 col += 2;
-                prev_char = if i > 0 && i - 1 < len { chars[i - 1] } else { ch };
                 continue;
             }
             if ch == string_char {
                 in_string = false;
             }
-            prev_char = ch;
             i += 1;
             col += 1;
             continue;
@@ -1000,7 +995,6 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
             _ => {}
         }
 
-        prev_char = ch;
         i += 1;
         col += 1;
     }
@@ -1028,14 +1022,13 @@ fn check_strings(content: &str, language: &str, errors: &mut Vec<SyntaxError>) {
         let chars: Vec<char> = line_str.chars().collect();
         let len = chars.len();
         let mut i = 0;
-        let mut in_line_comment = false;
 
         while i < len {
             // Skip comments
-            if !in_line_comment && i + 1 < len && chars[i] == '/' && chars[i + 1] == '/' {
+            if i + 1 < len && chars[i] == '/' && chars[i + 1] == '/' {
                 break;
             }
-            if !in_line_comment && chars[i] == '#' && language != "css" && language != "scss" {
+            if chars[i] == '#' && language != "css" && language != "scss" {
                 break;
             }
 
@@ -1071,7 +1064,7 @@ fn check_strings(content: &str, language: &str, errors: &mut Vec<SyntaxError>) {
                             line: line_idx,
                             col: start_col,
                             length: len - start_col,
-                            message: format!("Unclosed string"),
+                            message: "Unclosed string".to_string(),
                         });
                     }
                 }

@@ -68,12 +68,29 @@ impl Theme {
 
     /// Detect macOS system dark mode
     pub fn system_is_dark() -> bool {
-        // Check macOS dark mode via defaults read
-        std::process::Command::new("defaults")
-            .args(["read", "-g", "AppleInterfaceStyle"])
-            .output()
-            .map(|o| o.status.success()) // returns "Dark" if dark mode
-            .unwrap_or(false)
+        // Cache the result: spawning `defaults read` costs ~5-15ms on macOS, and was being
+        // called 10+ times per frame via Theme::resolved(). With ~12 callers, that single
+        // subprocess invocation was costing 60-180ms per frame. Refresh at most every 5s.
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::OnceLock;
+        use std::time::Instant;
+        static CACHED: AtomicBool = AtomicBool::new(false);
+        static LAST_CHECK_MS: AtomicU64 = AtomicU64::new(0);
+        static START: OnceLock<Instant> = OnceLock::new();
+        let start = *START.get_or_init(Instant::now);
+        let now_ms = start.elapsed().as_millis() as u64;
+        let last = LAST_CHECK_MS.load(Ordering::Relaxed);
+        if last == 0 || now_ms.saturating_sub(last) > 5_000 {
+            let is_dark = std::process::Command::new("defaults")
+                .args(["read", "-g", "AppleInterfaceStyle"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            CACHED.store(is_dark, Ordering::Relaxed);
+            LAST_CHECK_MS.store(now_ms.max(1), Ordering::Relaxed);
+            return is_dark;
+        }
+        CACHED.load(Ordering::Relaxed)
     }
 
     /// Resolve SystemDefault to actual theme
@@ -125,8 +142,8 @@ impl Theme {
                 fg_dim: Color32::from_rgb(148, 155, 168),       // muted text
                 gutter_fg: Color32::from_rgb(78, 90, 95),       // #4e5a5f
                 accent: Color32::from_rgb(116, 173, 232),       // #74ade8
-                selection_bg: Color32::from_rgba_premultiplied(116, 173, 232, 61), // #74ade8 at 24%
-                current_line_bg: Color32::from_rgba_premultiplied(47, 52, 62, 191), // #2f343e at 75%
+                selection_bg: Color32::from_rgba_unmultiplied(116, 173, 232, 61), // #74ade8 at 24%
+                current_line_bg: Color32::from_rgba_unmultiplied(47, 52, 62, 191), // #2f343e at 75%
                 cursor_color: Color32::from_rgb(116, 173, 232), // accent as cursor
                 border: Color32::from_rgb(70, 75, 87),          // #464b57
                 bracket_match_bg: Color32::from_rgb(58, 87, 110),
@@ -332,21 +349,21 @@ impl Theme {
                     Color32::from_rgb(255, 97, 136),
                 ],
             },
-            // Light — VS Code/Zed inspired
+            // Light — JetBrains IntelliJ / VS Code inspired
             Theme::Light => ThemeColors {
                 bg: Color32::from_rgb(255, 255, 255),            // White editor
-                sidebar_bg: Color32::from_rgb(243, 243, 243),    // Light gray sidebar (VS Code style)
+                sidebar_bg: Color32::from_rgb(245, 246, 247),    // Subtle warm gray (IntelliJ-like)
                 status_bg: Color32::from_rgb(0, 122, 204),       // Blue status bar (VS Code)
-                tab_bar_bg: Color32::from_rgb(236, 236, 236),    // Tab strip
+                tab_bar_bg: Color32::from_rgb(236, 237, 239),    // Tab strip
                 fg: Color32::from_rgb(30, 30, 30),               // Near-black text
                 fg_dim: Color32::from_rgb(110, 115, 125),        // Readable secondary
-                gutter_fg: Color32::from_rgb(145, 150, 160),     // Line numbers
+                gutter_fg: Color32::from_rgb(150, 155, 165),     // Line numbers
                 accent: Color32::from_rgb(0, 122, 204),          // VS Code blue
-                selection_bg: Color32::from_rgb(173, 214, 255),  // Bright selection
-                current_line_bg: Color32::from_rgb(248, 248, 248), // Very subtle
+                selection_bg: Color32::from_rgb(218, 230, 247),  // Soft, refined selection
+                current_line_bg: Color32::from_rgb(248, 249, 250), // Very subtle
                 cursor_color: Color32::from_rgb(0, 0, 0),        // Black cursor
-                border: Color32::from_rgb(218, 220, 224),        // Visible borders
-                bracket_match_bg: Color32::from_rgb(180, 215, 255),
+                border: Color32::from_rgb(224, 226, 230),        // Visible borders
+                bracket_match_bg: Color32::from_rgb(204, 222, 244),
                 red: Color32::from_rgb(205, 49, 49),
                 green: Color32::from_rgb(22, 130, 60),
                 orange: Color32::from_rgb(191, 120, 12),

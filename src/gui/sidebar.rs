@@ -12,35 +12,18 @@ impl CodeEditorApp {
                     Stroke::new(1.0, self.tc.border),
                 );
 
-                ui.add_space(4.0);
+                // Tool window header — shows the active tab name (JetBrains style)
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    let dark = self.app.settings.theme.resolved() != Theme::Light;
-                    for (label, tab) in [("  Files  ", SidebarTab::Files), ("  Git  ", SidebarTab::Git), ("  Search  ", SidebarTab::Search)] {
-                        let active = self.app.sidebar_tab == tab;
-                        let c = if active { self.tc.accent } else { self.tc.fg_dim };
-                        let btn = egui::Button::new(RichText::new(label).font(small()).color(c))
-                            .fill(Color32::TRANSPARENT).rounding(Rounding::ZERO).stroke(Stroke::NONE);
-                        let resp = ui.add(btn);
-                        // Hover background
-                        if resp.hovered() && !active {
-                            ui.painter().rect_filled(resp.rect, Rounding::same(3),
-                                if dark { Color32::from_white_alpha(8) } else { Color32::from_black_alpha(8) });
-                        }
-                        if resp.clicked() { self.app.sidebar_tab = tab; }
-                        if active {
-                            let rect = resp.rect;
-                            ui.painter().rect_filled(
-                                Rect::from_min_size(
-                                    Pos2::new(rect.min.x + 4.0, rect.max.y - 2.0),
-                                    Vec2::new(rect.width() - 8.0, 2.0),
-                                ),
-                                Rounding::same(1), self.tc.accent,
-                            );
-                        }
-                    }
+                    ui.add_space(12.0);
+                    let title = match self.app.sidebar_tab {
+                        SidebarTab::Files => "Project",
+                        SidebarTab::Git => "Git",
+                        SidebarTab::Search => "Find",
+                    };
+                    ui.label(RichText::new(title).font(FontId::monospace(11.0)).color(self.tc.fg_dim));
                 });
-                ui.add_space(2.0);
+                ui.add_space(6.0);
                 ui.painter().line_segment(
                     [Pos2::new(ui.max_rect().min.x, ui.cursor().min.y), Pos2::new(ui.max_rect().max.x, ui.cursor().min.y)],
                     Stroke::new(1.0, self.tc.border),
@@ -55,19 +38,74 @@ impl CodeEditorApp {
             });
     }
 
+    /// Vertical activity bar in JetBrains New UI style: thin strip of tool-window icons at
+    /// the left edge. Clicking an active icon hides the sidebar; inactive switches tab.
+    pub(super) fn render_activity_bar(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("activity_bar")
+            .exact_width(40.0)
+            .resizable(false)
+            .frame(egui::Frame::NONE.fill(self.tc.tab_bar_bg).inner_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 6 }))
+            .show(ctx, |ui| {
+                let r = ui.max_rect();
+                // Right border separator
+                ui.painter().line_segment(
+                    [Pos2::new(r.max.x, r.min.y), Pos2::new(r.max.x, r.max.y)],
+                    Stroke::new(1.0, self.tc.border),
+                );
+                ui.spacing_mut().item_spacing.y = 2.0;
+                // JetBrainsMono lacks glyphs for many Misc-Technical icons (⎇ ⌕ etc), so use
+                // bold single letters as in JetBrains compact activity bar without icon fonts.
+                for (icon, tab, tip) in [
+                    ("P", SidebarTab::Files, "Project"),
+                    ("G", SidebarTab::Git, "Git"),
+                    ("F", SidebarTab::Search, "Find"),
+                ] {
+                    let active = self.app.show_sidebar && self.app.sidebar_tab == tab;
+                    let color = if active { self.tc.fg } else { self.tc.fg_dim };
+                    let resp = ui.add(
+                        egui::Button::new(
+                            RichText::new(icon).font(FontId::monospace(15.0)).color(color)
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .min_size(Vec2::new(40.0, 36.0))
+                        .corner_radius(CornerRadius::ZERO)
+                        .stroke(Stroke::NONE),
+                    ).on_hover_text(tip);
+                    if resp.clicked() {
+                        if active {
+                            self.app.show_sidebar = false;
+                        } else {
+                            self.app.sidebar_tab = tab;
+                            self.app.show_sidebar = true;
+                        }
+                    }
+                    if active {
+                        let r = resp.rect;
+                        ui.painter().rect_filled(
+                            Rect::from_min_size(
+                                Pos2::new(r.min.x, r.min.y + 4.0),
+                                Vec2::new(2.0, r.height() - 8.0),
+                            ),
+                            CornerRadius::same(1), self.tc.accent,
+                        );
+                    }
+                }
+            });
+    }
+
     fn render_file_tree(&mut self, ui: &mut egui::Ui) {
         let dark = self.app.settings.theme.resolved() != Theme::Light;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(8.0);
             for (icon, tip, action) in [
-                ("+", "New File", 0u8),
-                ("□", "New Folder", 1),
-                ("↻", "Refresh", 2),
+                ("+", "New File in selected folder", 0u8),
+                ("□", "New Folder in selected folder", 1),
+                ("↻", "Refresh tree from disk", 2),
             ] {
                 if ui.add(egui::Button::new(RichText::new(icon).font(small()).color(self.tc.fg_dim))
                     .fill(Color32::TRANSPARENT).min_size(Vec2::new(22.0, 18.0))
-                    .rounding(Rounding::same(3)))
+                    .corner_radius(CornerRadius::same(3)))
                     .on_hover_text(tip).clicked()
                 {
                     match action {
@@ -77,24 +115,65 @@ impl CodeEditorApp {
                     }
                 }
             }
+            // Right-side actions: open another / close this project (JetBrains-style).
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(6.0);
+                if ui.add(egui::Button::new(RichText::new("✕").font(small()).color(self.tc.fg_dim))
+                    .fill(Color32::TRANSPARENT).min_size(Vec2::new(22.0, 18.0))
+                    .corner_radius(CornerRadius::same(3)))
+                    .on_hover_text("Close Project (⌘⇧W)").clicked()
+                {
+                    self.app.close_project();
+                }
+                if ui.add(egui::Button::new(RichText::new("…").font(small()).color(self.tc.fg_dim))
+                    .fill(Color32::TRANSPARENT).min_size(Vec2::new(22.0, 18.0))
+                    .corner_radius(CornerRadius::same(3)))
+                    .on_hover_text("Open another folder (⌘O)").clicked()
+                {
+                    self.app.pending_action = Some(crate::app::PaletteAction::OpenFolder);
+                }
+            });
         });
         ui.add_space(2.0);
 
         let row_h = 28.0;
         let indent_px = 18.0;
 
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let total_entries = self.app.file_tree.flat_entries.len();
+        let drag_active = self.drag_source.is_some();
+        if drag_active { self.drop_target = None; }
+
+        // Deferred mutations — collected during the row render pass, applied after.
+        // This avoids per-frame clones of flat_entries and lets us use show_rows for
+        // visible-row-only iteration (huge win on large projects).
+        let mut new_drop_target: Option<(usize, String)> = None;
+        let mut toggle_expand_idx: Option<usize> = None;
+        let mut open_file_path: Option<String> = None;
+        let mut select_idx: Option<usize> = None;
+        let mut start_drag: Option<(usize, String)> = None;
+        let mut start_new_file = false;
+        let mut start_new_folder = false;
+        let mut start_rename_for: Option<usize> = None;
+        let mut duplicate_path: Option<String> = None;
+        let mut want_delete_for: Option<usize> = None;
+        let mut close_in_editor_path: Option<String> = None;
+        let mut close_project_now = false;
+        let mut pending_open_folder = false;
+
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, total_entries, |ui, row_range| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            let entries = self.app.file_tree.flat_entries.clone();
             let drag_source_idx = self.drag_source.as_ref().map(|(i, _)| *i);
-            if self.drag_source.is_some() {
-                self.drop_target = None;
-            }
-            let mut new_drop_target: Option<(usize, String)> = None;
             let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
 
-            for (i, entry) in entries.iter().enumerate() {
-                let depth = entry.depth;
+            for i in row_range {
+                // Snapshot only the fields we need this iteration. Path/name clone only for
+                // the visible slice (~30 rows), not for the entire tree.
+                let (depth, name, path, is_directory, is_expanded) = {
+                    let e = &self.app.file_tree.flat_entries[i];
+                    (e.depth, e.name.clone(), e.path.clone(), e.is_directory, e.is_expanded)
+                };
+                let entry_name = name.as_str();
+                let entry_path = path.as_str();
                 let indent = indent_px * depth as f32 + 8.0;
                 let sel = i == self.app.file_tree.selected_index;
                 let is_dragged = drag_source_idx == Some(i);
@@ -104,26 +183,26 @@ impl CodeEditorApp {
                     egui::Sense::click_and_drag(),
                 );
 
-                let is_drop = if self.drag_source.is_some() && entry.is_directory {
+                let is_drop = if drag_active && is_directory {
                     pointer_pos.is_some_and(|p| row_rect.contains(p))
                 } else {
                     false
                 };
 
-                let drop_bg = if dark { Color32::from_rgb(35, 50, 80) } else { Color32::from_rgb(210, 225, 245) };
-                let hover_bg = if dark { Color32::from_rgb(54, 60, 70) } else { Color32::from_rgb(232, 235, 240) }; // Zed: #363c46
+                let drop_bg = if dark { Color32::from_rgb(35, 50, 80) } else { Color32::from_rgb(225, 235, 248) };
+                let hover_bg = if dark { Color32::from_rgb(54, 60, 70) } else { Color32::from_rgb(236, 238, 242) }; // Zed: #363c46
                 let is_hovered = row_resp.hovered() && !is_drop && !sel;
                 let bg = if is_drop { drop_bg } else if sel { self.tc.selection_bg } else if is_hovered { hover_bg } else { Color32::TRANSPARENT };
 
                 if bg != Color32::TRANSPARENT {
-                    ui.painter().rect_filled(row_rect, Rounding::ZERO, bg);
+                    ui.painter().rect_filled(row_rect, CornerRadius::ZERO, bg);
                 }
 
                 if is_drop {
-                    ui.painter().rect_stroke(row_rect, Rounding::same(3), Stroke::new(2.0, self.tc.accent), egui::StrokeKind::Outside);
+                    ui.painter().rect_stroke(row_rect, CornerRadius::same(3), Stroke::new(2.0, self.tc.accent), egui::StrokeKind::Outside);
                     ui.painter().rect_filled(
                         Rect::from_min_size(row_rect.min, Vec2::new(3.0, row_rect.height())),
-                        Rounding::ZERO,
+                        CornerRadius::ZERO,
                         self.tc.accent,
                     );
                 }
@@ -141,85 +220,128 @@ impl CodeEditorApp {
 
                 let dim = if is_dragged { 0.35 } else { 1.0 };
                 let row_y = row_rect.min.y + (row_h - 13.0) / 2.0;
-                let text_color = if entry.name.starts_with('.') {
+                let text_color = if sel {
+                    self.tc.fg
+                } else if entry_name.starts_with('.') {
                     self.tc.fg_dim
                 } else {
                     self.tc.fg
                 }.linear_multiply(dim);
-                let arrow_color = if dark {
-                    Color32::from_rgb(140, 140, 140)
+                let arrow_color = if sel {
+                    self.tc.fg
+                } else if dark {
+                    Color32::from_rgb(160, 165, 175)
                 } else {
-                    Color32::from_rgb(130, 130, 130)
+                    Color32::from_rgb(95, 100, 110)
                 }.linear_multiply(dim);
 
-                if entry.is_directory {
-                    let arr = if entry.is_expanded { "▾" } else { "▸" };
+                if is_directory {
+                    let arr = if is_expanded { "▾" } else { "▸" };
                     painter.text(
                         Pos2::new(row_rect.min.x + indent, row_y),
                         egui::Align2::LEFT_TOP, arr, FontId::monospace(12.0), arrow_color,
                     );
                     painter.text(
                         Pos2::new(row_rect.min.x + indent + 14.0, row_y),
-                        egui::Align2::LEFT_TOP, &entry.name, FontId::monospace(13.0), text_color,
+                        egui::Align2::LEFT_TOP, entry_name, FontId::monospace(13.0), text_color,
                     );
                 } else {
-                    let dot_color = file_icon_color(&entry.name, dark).linear_multiply(dim);
+                    let dot_color = file_icon_color(entry_name, dark).linear_multiply(dim);
                     let dot_y = row_rect.min.y + row_h / 2.0;
                     painter.circle_filled(
                         Pos2::new(row_rect.min.x + indent + 5.0, dot_y), 3.5, dot_color,
                     );
                     painter.text(
                         Pos2::new(row_rect.min.x + indent + 14.0, row_y),
-                        egui::Align2::LEFT_TOP, &entry.name, FontId::monospace(13.0), text_color,
+                        egui::Align2::LEFT_TOP, entry_name, FontId::monospace(13.0), text_color,
                     );
                 }
 
                 if row_resp.drag_started() {
-                    self.drag_source = Some((i, entry.path.clone()));
+                    start_drag = Some((i, path.clone()));
                 }
 
-                if row_resp.clicked() && self.drag_source.is_none() {
-                    self.app.file_tree.selected_index = i;
-                    if entry.is_directory {
-                        self.app.file_tree.toggle_expand(i);
+                if row_resp.clicked() && !drag_active {
+                    select_idx = Some(i);
+                    if is_directory {
+                        toggle_expand_idx = Some(i);
                     } else {
-                        let p = entry.path.clone();
-                        self.app.open_file(&p);
+                        open_file_path = Some(path.clone());
                     }
                 }
 
-                if self.drag_source.is_some() {
+                if drag_active {
                     if let Some(pp) = pointer_pos {
                         if row_rect.contains(pp) {
-                            if entry.is_directory {
-                                new_drop_target = Some((i, entry.path.clone()));
-                            } else if let Some(parent) = std::path::Path::new(&entry.path).parent() {
+                            if is_directory {
+                                new_drop_target = Some((i, path.clone()));
+                            } else if let Some(parent) = std::path::Path::new(entry_path).parent() {
                                 new_drop_target = Some((i, parent.to_string_lossy().to_string()));
                             }
                         }
                     }
                 }
 
+                let is_root = depth == 0;
                 row_resp.context_menu(|ui| {
-                    self.app.file_tree.selected_index = i;
-                    if ui.button("New File Here").clicked() { self.app.start_new_file_dialog(); ui.close_menu(); }
-                    if ui.button("New Folder Here").clicked() { self.app.start_new_folder_dialog(); ui.close_menu(); }
+                    select_idx = Some(i);
+                    if ui.button("New File Here").clicked() { start_new_file = true; ui.close_menu(); }
+                    if ui.button("New Folder Here").clicked() { start_new_folder = true; ui.close_menu(); }
                     ui.separator();
-                    if ui.button("Rename").clicked() { self.app.start_rename_dialog(); ui.close_menu(); }
-                    if ui.button("Duplicate").clicked() {
-                        let p = entry.path.clone();
-                        let _ = self.app.file_tree.duplicate_entry(&p);
-                        ui.close_menu();
+                    if !is_directory {
+                        if ui.button("Close in Editor").on_hover_text("Close this file's tabs (file stays on disk)").clicked() {
+                            close_in_editor_path = Some(path.clone());
+                            ui.close_menu();
+                        }
+                        ui.separator();
                     }
-                    ui.separator();
-                    if ui.button("Delete").clicked() { self.app.focus = Focus::DeleteConfirm; ui.close_menu(); }
+                    if !is_root {
+                        if ui.button("Rename").clicked() { start_rename_for = Some(i); ui.close_menu(); }
+                        if ui.button("Duplicate").clicked() {
+                            duplicate_path = Some(path.clone());
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("Delete from disk").clicked() { want_delete_for = Some(i); ui.close_menu(); }
+                    } else {
+                        if ui.button("Open Another Folder…  ⌘O").clicked() {
+                            pending_open_folder = true;
+                            ui.close_menu();
+                        }
+                        if ui.button("Close Project  ⌘⇧W").clicked() {
+                            close_project_now = true;
+                            ui.close_menu();
+                        }
+                    }
                 });
             }
-
-            if let Some(dt) = new_drop_target {
-                self.drop_target = Some(dt);
-            }
         });
+
+        // Apply all deferred mutations after the render pass.
+        if let Some(dt) = new_drop_target { self.drop_target = Some(dt); }
+        if let Some(idx) = select_idx { self.app.file_tree.selected_index = idx; }
+        if let Some(d) = start_drag { self.drag_source = Some(d); }
+        if let Some(idx) = toggle_expand_idx { self.app.file_tree.toggle_expand(idx); }
+        if let Some(p) = open_file_path { self.app.open_file(&p); }
+        if start_new_file { self.app.start_new_file_dialog(); }
+        if start_new_folder { self.app.start_new_folder_dialog(); }
+        if let Some(idx) = start_rename_for { self.app.file_tree.selected_index = idx; self.app.start_rename_dialog(); }
+        if let Some(p) = duplicate_path { let _ = self.app.file_tree.duplicate_entry(&p); }
+        if let Some(idx) = want_delete_for { self.app.file_tree.selected_index = idx; self.app.focus = Focus::DeleteConfirm; }
+        if close_project_now { self.app.close_project(); return; }
+        if pending_open_folder { self.app.pending_action = Some(crate::app::PaletteAction::OpenFolder); }
+        if let Some(p) = close_in_editor_path {
+            // Close every tab pointing to that file. If only tab gets closed, leave an
+            // untitled buffer so the editor never has zero tabs.
+            let mut i = 0;
+            while i < self.app.editors.len() {
+                if self.app.editors[i].file_path.as_deref() == Some(p.as_str()) {
+                    self.app.close_tab(i);
+                } else {
+                    i += 1;
+                }
+            }
+        }
 
         // Handle drop
         if ui.input(|i| i.pointer.any_released()) {
@@ -251,211 +373,501 @@ impl CodeEditorApp {
 
     fn render_git(&mut self, ui: &mut egui::Ui) {
         let tc = self.tc;
-        ui.add_space(4.0);
 
-        // Clone status to avoid borrow issues
         let status = self.app.git_status.clone();
-        if let Some(status) = status {
-            if status.is_repo {
-                // Branch + toolbar
-                ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(format!("⎇ {}", status.branch)).font(small()).color(tc.accent));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(8.0);
-                        // Refresh button
-                        if ui.add(egui::Button::new(RichText::new("↻").font(small()).color(tc.fg_dim))
-                            .fill(Color32::TRANSPARENT).min_size(Vec2::new(22.0, 18.0)))
-                            .on_hover_text("Refresh git status").clicked()
-                        {
-                            self.app.refresh_git_async();
-                        }
-                    });
-                });
-                ui.add_space(4.0);
-                ui.painter().line_segment(
-                    [Pos2::new(ui.max_rect().min.x, ui.cursor().min.y), Pos2::new(ui.max_rect().max.x, ui.cursor().min.y)],
-                    Stroke::new(1.0, tc.border),
-                );
-                ui.add_space(2.0);
-
-                // Action buttons
-                ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    let has_staged = status.files.iter().any(|f| f.staged);
-                    // Stage All
-                    if ui.add(egui::Button::new(RichText::new("Stage All").font(FontId::monospace(10.0)).color(tc.fg_dim))
-                        .fill(Color32::TRANSPARENT).min_size(Vec2::new(0.0, 18.0))).clicked()
-                    {
-                        self.app.git_stage_all();
-                    }
-                    // Commit
-                    if has_staged {
-                        if ui.add(egui::Button::new(RichText::new("Commit").font(FontId::monospace(10.0)).color(tc.green))
-                            .fill(Color32::TRANSPARENT).min_size(Vec2::new(0.0, 18.0))).clicked()
-                        {
-                            self.app.focus = Focus::CommitInput;
-                            self.app.commit_message.clear();
-                        }
-                    }
-                });
-
-                ui.add_space(2.0);
-                ui.painter().line_segment(
-                    [Pos2::new(ui.max_rect().min.x, ui.cursor().min.y), Pos2::new(ui.max_rect().max.x, ui.cursor().min.y)],
-                    Stroke::new(1.0, tc.border),
-                );
-                ui.add_space(4.0);
-
-                // Staged files section
-                let staged: Vec<_> = status.files.iter().filter(|f| f.staged).collect();
-                let unstaged: Vec<_> = status.files.iter().filter(|f| !f.staged).collect();
-
-                // Deferred actions
-                let mut action_stage: Option<String> = None;
-                let mut action_unstage: Option<String> = None;
-                let mut action_discard: Option<String> = None;
-                let mut action_open: Option<String> = None;
-
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-
-                    if !staged.is_empty() {
-                        ui.horizontal(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(RichText::new(format!("Staged ({})", staged.len()))
-                                .font(FontId::monospace(10.0)).color(tc.green).strong());
-                        });
-                        ui.add_space(2.0);
-
-                        for f in &staged {
-                            let (row_rect, row_resp) = ui.allocate_exact_size(
-                                Vec2::new(ui.available_width(), 24.0),
-                                egui::Sense::click(),
-                            );
-                            if row_resp.hovered() {
-                                ui.painter().rect_filled(row_rect, Rounding::ZERO, tc.selection_bg);
-                            }
-                            ui.painter().text(
-                                Pos2::new(row_rect.min.x + 12.0, row_rect.min.y + 5.0),
-                                egui::Align2::LEFT_TOP,
-                                format!("✓ {} {}", f.status.symbol(), f.path),
-                                FontId::monospace(11.0), tc.green,
-                            );
-                            // Click to open file
-                            if row_resp.clicked() {
-                                action_open = Some(f.path.clone());
-                            }
-                            // Context menu
-                            row_resp.context_menu(|ui| {
-                                if ui.button("Unstage").clicked() {
-                                    action_unstage = Some(f.path.clone());
-                                    ui.close_menu();
-                                }
-                                if ui.button("Open File").clicked() {
-                                    action_open = Some(f.path.clone());
-                                    ui.close_menu();
-                                }
-                            });
-                        }
-                        ui.add_space(6.0);
-                    }
-
-                    if !unstaged.is_empty() {
-                        ui.horizontal(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(RichText::new(format!("Changes ({})", unstaged.len()))
-                                .font(FontId::monospace(10.0)).color(tc.orange).strong());
-                        });
-                        ui.add_space(2.0);
-
-                        for f in &unstaged {
-                            let (row_rect, row_resp) = ui.allocate_exact_size(
-                                Vec2::new(ui.available_width(), 24.0),
-                                egui::Sense::click(),
-                            );
-                            if row_resp.hovered() {
-                                ui.painter().rect_filled(row_rect, Rounding::ZERO, tc.selection_bg);
-                            }
-                            ui.painter().text(
-                                Pos2::new(row_rect.min.x + 12.0, row_rect.min.y + 5.0),
-                                egui::Align2::LEFT_TOP,
-                                format!("● {} {}", f.status.symbol(), f.path),
-                                FontId::monospace(11.0), tc.orange,
-                            );
-                            if row_resp.clicked() {
-                                action_open = Some(f.path.clone());
-                            }
-                            row_resp.context_menu(|ui| {
-                                if ui.button("Stage").clicked() {
-                                    action_stage = Some(f.path.clone());
-                                    ui.close_menu();
-                                }
-                                if ui.button("Discard Changes").clicked() {
-                                    action_discard = Some(f.path.clone());
-                                    ui.close_menu();
-                                }
-                                if ui.button("Open File").clicked() {
-                                    action_open = Some(f.path.clone());
-                                    ui.close_menu();
-                                }
-                            });
-                        }
-                    }
-
-                    if staged.is_empty() && unstaged.is_empty() {
-                        ui.add_space(20.0);
-                        ui.vertical_centered(|ui| {
-                            ui.label(RichText::new("No changes").font(small()).color(tc.fg_dim));
-                        });
-                    }
-                });
-
-                // Execute deferred actions
-                if let Some(path) = action_stage {
-                    if let Some(ref root) = self.app.file_tree.root_path.clone() {
-                        match self.app.git.stage_file(root, &path) {
-                            Ok(_) => { self.app.status_message = format!("Staged: {}", path); self.app.refresh_git_status(); }
-                            Err(e) => self.app.status_message = format!("Error: {}", e),
-                        }
-                    }
-                }
-                if let Some(path) = action_unstage {
-                    if let Some(ref root) = self.app.file_tree.root_path.clone() {
-                        match self.app.git.unstage_file(root, &path) {
-                            Ok(_) => { self.app.status_message = format!("Unstaged: {}", path); self.app.refresh_git_status(); }
-                            Err(e) => self.app.status_message = format!("Error: {}", e),
-                        }
-                    }
-                }
-                if let Some(path) = action_discard {
-                    if let Some(ref root) = self.app.file_tree.root_path.clone() {
-                        match self.app.git.discard_file(root, &path) {
-                            Ok(_) => { self.app.status_message = format!("Discarded: {}", path); self.app.refresh_git_status(); }
-                            Err(e) => self.app.status_message = format!("Error: {}", e),
-                        }
-                    }
-                }
-                if let Some(path) = action_open {
-                    if let Some(ref root) = self.app.file_tree.root_path {
-                        let full_path = format!("{}/{}", root, path);
-                        self.app.open_file(&full_path);
-                        self.app.focus = Focus::Editor;
-                    }
-                }
-            } else {
+        let status = match status {
+            Some(s) if s.is_repo => s,
+            Some(_) => {
                 ui.vertical_centered(|ui| {
                     ui.add_space(20.0);
                     ui.label(RichText::new("Not a git repository").font(small()).color(tc.fg_dim));
                 });
+                return;
             }
-        } else {
-            ui.vertical_centered(|ui| {
-                ui.add_space(20.0);
-                ui.label(RichText::new("Open a folder to see git status").font(small()).color(tc.fg_dim));
+            None => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(20.0);
+                    ui.label(RichText::new("Open a folder to see git status").font(small()).color(tc.fg_dim));
+                });
+                return;
+            }
+        };
+
+        let has_staged = status.files.iter().any(|f| f.staged);
+        let staged_count = status.files.iter().filter(|f| f.staged).count();
+        let unstaged_count = status.files.len() - staged_count;
+        let root = self.app.file_tree.root_path.clone();
+
+        // ── Branch row + Pull / Push / Fetch / Refresh ──
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            // Branch is a button that opens the branch switcher popup.
+            let branch_btn = ui.add(
+                egui::Button::new(RichText::new(format!("⎇ {} ▾", status.branch))
+                    .font(small()).color(tc.accent))
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::NONE)
+                .min_size(Vec2::new(0.0, 20.0))
+                .corner_radius(CornerRadius::same(3))
+            ).on_hover_text("Switch branch · ⌥ to list");
+            if branch_btn.clicked() {
+                self.app.branch_popup_open = !self.app.branch_popup_open;
+                self.app.branch_popup_anchor = Some(branch_btn.rect.left_bottom());
+                self.app.branch_popup_query.clear();
+                self.app.branch_popup_new_mode = false;
+                self.app.branch_popup_new_name.clear();
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(4.0);
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let icon_btn = |ui: &mut egui::Ui, txt: &str, tip: &str, color: Color32| -> bool {
+                    ui.add(egui::Button::new(RichText::new(txt).font(FontId::monospace(13.0)).color(color))
+                        .fill(Color32::TRANSPARENT).min_size(Vec2::new(22.0, 20.0))
+                        .corner_radius(CornerRadius::same(3))
+                    ).on_hover_text(tip).clicked()
+                };
+                if icon_btn(ui, "↻", "Refresh git status", tc.fg_dim) {
+                    self.app.refresh_git_async();
+                }
+                if icon_btn(ui, "↑", "Push (git push)", tc.fg_dim) {
+                    if let Some(ref r) = root { Self::spawn_git_cli(r.clone(), vec!["push".into()], "Push", self.app.status_message.clone().into()); self.app.status_message = "Pushing…".into(); }
+                }
+                if icon_btn(ui, "↓", "Pull (git pull)", tc.fg_dim) {
+                    if let Some(ref r) = root { Self::spawn_git_cli(r.clone(), vec!["pull".into()], "Pull", self.app.status_message.clone().into()); self.app.status_message = "Pulling…".into(); }
+                }
+                if icon_btn(ui, "⇣", "Fetch (git fetch)", tc.fg_dim) {
+                    if let Some(ref r) = root { Self::spawn_git_cli(r.clone(), vec!["fetch".into()], "Fetch", self.app.status_message.clone().into()); self.app.status_message = "Fetching…".into(); }
+                }
             });
+        });
+        ui.add_space(4.0);
+        ui.painter().line_segment(
+            [Pos2::new(ui.max_rect().min.x, ui.cursor().min.y), Pos2::new(ui.max_rect().max.x, ui.cursor().min.y)],
+            Stroke::new(1.0, tc.border),
+        );
+        ui.add_space(6.0);
+
+        // ── Inline commit message + Commit / Commit&Push buttons ──
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.set_max_width(ui.available_width() - 16.0);
+                ui.label(RichText::new("Commit message").font(FontId::monospace(10.0)).color(tc.fg_dim));
+                ui.add(egui::TextEdit::multiline(&mut self.app.commit_message)
+                    .font(FontId::monospace(12.0))
+                    .hint_text("Describe your changes…")
+                    .desired_rows(3)
+                    .desired_width(ui.available_width())
+                    .text_color(tc.fg));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let can_commit = has_staged && !self.app.commit_message.trim().is_empty();
+                    let commit_color = if can_commit { tc.green } else { tc.fg_dim };
+                    if ui.add_enabled(can_commit,
+                        egui::Button::new(RichText::new(format!("Commit ({} staged)", staged_count))
+                            .font(FontId::monospace(11.0)).color(commit_color))
+                            .fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, commit_color))
+                            .corner_radius(CornerRadius::same(3))
+                            .min_size(Vec2::new(0.0, 22.0))
+                    ).clicked() {
+                        if let Some(ref r) = root {
+                            match self.app.git.commit(r, &self.app.commit_message) {
+                                Ok(_) => {
+                                    self.app.status_message = "Commit created".into();
+                                    self.app.commit_message.clear();
+                                    self.app.refresh_git_status();
+                                }
+                                Err(e) => { self.app.status_message = format!("Commit failed: {}", e); }
+                            }
+                        }
+                    }
+                    if ui.add_enabled(can_commit,
+                        egui::Button::new(RichText::new("Commit & Push")
+                            .font(FontId::monospace(11.0)).color(commit_color))
+                            .fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, commit_color))
+                            .corner_radius(CornerRadius::same(3))
+                            .min_size(Vec2::new(0.0, 22.0))
+                    ).clicked() {
+                        if let Some(ref r) = root {
+                            match self.app.git.commit(r, &self.app.commit_message) {
+                                Ok(_) => {
+                                    self.app.commit_message.clear();
+                                    Self::spawn_git_cli(r.clone(), vec!["push".into()], "Push", None);
+                                    self.app.status_message = "Commit done, pushing…".into();
+                                    self.app.refresh_git_status();
+                                }
+                                Err(e) => { self.app.status_message = format!("Commit failed: {}", e); }
+                            }
+                        }
+                    }
+                });
+            });
+        });
+        ui.add_space(6.0);
+        ui.painter().line_segment(
+            [Pos2::new(ui.max_rect().min.x, ui.cursor().min.y), Pos2::new(ui.max_rect().max.x, ui.cursor().min.y)],
+            Stroke::new(1.0, tc.border),
+        );
+        ui.add_space(4.0);
+
+        // ── File lists with checkbox-style staging ──
+        let mut action_stage: Option<String> = None;
+        let mut action_unstage: Option<String> = None;
+        let mut action_discard: Option<String> = None;
+        let mut action_open: Option<String> = None;
+        let mut stage_all = false;
+        let mut unstage_all = false;
+
+        // Build file lists before entering the scroll-area closure so they outlive it.
+        let staged_files: Vec<(String, &'static str)> = status.files.iter()
+            .filter(|f| f.staged)
+            .map(|f| (f.path.clone(), f.status.symbol()))
+            .collect();
+        let unstaged_files: Vec<(String, &'static str)> = status.files.iter()
+            .filter(|f| !f.staged)
+            .map(|f| (f.path.clone(), f.status.symbol()))
+            .collect();
+
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let render_section = |ui: &mut egui::Ui,
+                title: &str,
+                count: usize,
+                title_color: Color32,
+                files: Vec<(String, &'static str)>,
+                section_action_caption: &str,
+                section_action_flag: &mut bool,
+                stage_checked: bool,
+                tc: ThemeColors,
+                stage_out: &mut Option<String>,
+                unstage_out: &mut Option<String>,
+                discard_out: &mut Option<String>,
+                open_out: &mut Option<String>,
+            | {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(format!("{} ({})", title, count))
+                        .font(FontId::monospace(10.5)).color(title_color).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        if count > 0 && ui.add(egui::Button::new(
+                            RichText::new(section_action_caption).font(FontId::monospace(10.0)).color(tc.fg_dim)
+                        ).fill(Color32::TRANSPARENT).min_size(Vec2::new(0.0, 18.0))
+                        .corner_radius(CornerRadius::same(3))).clicked() {
+                            *section_action_flag = true;
+                        }
+                    });
+                });
+                ui.add_space(2.0);
+
+                for (path, status_sym) in files {
+                    let (row_rect, row_resp) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), 22.0),
+                        egui::Sense::click(),
+                    );
+                    if row_resp.hovered() {
+                        ui.painter().rect_filled(row_rect, CornerRadius::ZERO, tc.selection_bg);
+                    }
+                    // Checkbox at left (☑ if staged, ☐ if not)
+                    let checkbox_x = row_rect.min.x + 8.0;
+                    let cb_y = row_rect.min.y + 11.0;
+                    let cb_rect = Rect::from_center_size(Pos2::new(checkbox_x + 6.0, cb_y), Vec2::new(14.0, 14.0));
+                    let cb_resp = ui.allocate_rect(cb_rect, egui::Sense::click());
+                    let cb_color = if stage_checked { tc.green } else { tc.fg_dim };
+                    ui.painter().rect_stroke(cb_rect, CornerRadius::same(2), Stroke::new(1.0, cb_color), egui::StrokeKind::Outside);
+                    if stage_checked {
+                        ui.painter().text(cb_rect.center(), egui::Align2::CENTER_CENTER, "✓",
+                            FontId::monospace(11.0), tc.green);
+                    }
+                    if cb_resp.clicked() {
+                        if stage_checked { *unstage_out = Some(path.clone()); }
+                        else { *stage_out = Some(path.clone()); }
+                    }
+                    // Status letter + path
+                    let status_color = match status_sym {
+                        "M" => tc.orange,
+                        "A" => tc.green,
+                        "D" => tc.red,
+                        "?" => tc.fg_dim,
+                        _ => tc.fg,
+                    };
+                    ui.painter().text(
+                        Pos2::new(row_rect.min.x + 24.0, row_rect.min.y + 4.0),
+                        egui::Align2::LEFT_TOP, status_sym, FontId::monospace(11.0), status_color,
+                    );
+                    ui.painter().text(
+                        Pos2::new(row_rect.min.x + 38.0, row_rect.min.y + 4.0),
+                        egui::Align2::LEFT_TOP, path.as_str(), FontId::monospace(11.0), tc.fg,
+                    );
+                    if row_resp.clicked() && !cb_resp.clicked() {
+                        *open_out = Some(path.clone());
+                    }
+                    row_resp.context_menu(|ui| {
+                        if stage_checked {
+                            if ui.button("Unstage").clicked() { *unstage_out = Some(path.clone()); ui.close_menu(); }
+                        } else {
+                            if ui.button("Stage").clicked() { *stage_out = Some(path.clone()); ui.close_menu(); }
+                            if ui.button("Discard Changes").clicked() { *discard_out = Some(path.clone()); ui.close_menu(); }
+                        }
+                        if ui.button("Open File").clicked() { *open_out = Some(path.clone()); ui.close_menu(); }
+                    });
+                }
+                ui.add_space(6.0);
+            };
+
+            if staged_count > 0 {
+                render_section(ui, "Staged", staged_count, tc.green, staged_files,
+                    "Unstage All", &mut unstage_all, true, tc,
+                    &mut action_stage, &mut action_unstage, &mut action_discard, &mut action_open);
+            }
+            if unstaged_count > 0 {
+                render_section(ui, "Changes", unstaged_count, tc.orange, unstaged_files,
+                    "Stage All", &mut stage_all, false, tc,
+                    &mut action_stage, &mut action_unstage, &mut action_discard, &mut action_open);
+            }
+            if staged_count == 0 && unstaged_count == 0 {
+                ui.add_space(20.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("Nothing to commit. Working tree clean.").font(small()).color(tc.fg_dim));
+                });
+            }
+        });
+
+        // ── Execute deferred actions ──
+        let root = self.app.file_tree.root_path.clone();
+        if let Some(ref r) = root {
+            if let Some(path) = action_stage {
+                match self.app.git.stage_file(r, &path) {
+                    Ok(_) => { self.app.status_message = format!("Staged: {}", path); self.app.refresh_git_status(); }
+                    Err(e) => self.app.status_message = format!("Error: {}", e),
+                }
+            }
+            if let Some(path) = action_unstage {
+                match self.app.git.unstage_file(r, &path) {
+                    Ok(_) => { self.app.status_message = format!("Unstaged: {}", path); self.app.refresh_git_status(); }
+                    Err(e) => self.app.status_message = format!("Error: {}", e),
+                }
+            }
+            if let Some(path) = action_discard {
+                match self.app.git.discard_file(r, &path) {
+                    Ok(_) => { self.app.status_message = format!("Discarded: {}", path); self.app.refresh_git_status(); }
+                    Err(e) => self.app.status_message = format!("Error: {}", e),
+                }
+            }
+            if stage_all {
+                match self.app.git.stage_all(r) {
+                    Ok(_) => { self.app.status_message = "Staged all files".into(); self.app.refresh_git_status(); }
+                    Err(e) => self.app.status_message = format!("Error: {}", e),
+                }
+            }
+            if unstage_all {
+                // Unstage all = `git reset` (reset index to HEAD)
+                let r = r.clone();
+                match crate::git::GitManager::run_cli(&r, &["reset"]) {
+                    Ok(_) => { self.app.status_message = "Unstaged all files".into(); self.app.refresh_git_status(); }
+                    Err(e) => self.app.status_message = format!("Error: {}", e),
+                }
+            }
+            if let Some(path) = action_open {
+                let full_path = format!("{}/{}", r, path);
+                self.app.open_file(&full_path);
+                self.app.focus = Focus::Editor;
+            }
         }
+
+        // ── Branch switcher popup ──
+        if self.app.branch_popup_open {
+            self.render_branch_popup(ui.ctx(), &status.branch);
+        }
+    }
+
+    fn render_branch_popup(&mut self, ctx: &egui::Context, current_branch: &str) {
+        let tc = self.tc;
+        let root = match self.app.file_tree.root_path.clone() {
+            Some(r) => r,
+            None => return,
+        };
+        let anchor = self.app.branch_popup_anchor.unwrap_or(egui::pos2(60.0, 60.0));
+        // Click outside the popup → close.
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if escape {
+            self.app.branch_popup_open = false;
+            return;
+        }
+
+        let dark = self.app.settings.theme.resolved() != Theme::Light;
+        let popup_bg = if dark { Color32::from_rgb(30, 31, 42) } else { Color32::from_rgb(255, 255, 255) };
+
+        let mut close_after = false;
+        let mut checkout_target: Option<String> = None;
+        let mut create_name: Option<String> = None;
+
+        let popup_id = egui::Id::new("branch_popup");
+        let inner = egui::Area::new(popup_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(anchor + egui::vec2(0.0, 4.0))
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(popup_bg)
+                    .stroke(Stroke::new(1.0, tc.border))
+                    .corner_radius(CornerRadius::same(6))
+                    .inner_margin(8.0)
+                    .shadow(egui::epaint::Shadow {
+                        offset: [0, 8], blur: 24, spread: 2,
+                        color: Color32::from_black_alpha(if dark { 80 } else { 30 }),
+                    })
+                    .show(ui, |ui| {
+                        ui.set_min_width(280.0);
+                        ui.set_max_width(360.0);
+
+                        if self.app.branch_popup_new_mode {
+                            // Create new branch UI
+                            ui.label(RichText::new("New branch from current HEAD")
+                                .font(FontId::monospace(11.0)).color(tc.fg_dim));
+                            ui.add_space(4.0);
+                            let resp = ui.add(egui::TextEdit::singleline(&mut self.app.branch_popup_new_name)
+                                .font(FontId::monospace(13.0))
+                                .hint_text("branch name…")
+                                .desired_width(ui.available_width())
+                                .text_color(tc.fg));
+                            resp.request_focus();
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                let trimmed = self.app.branch_popup_new_name.trim().to_string();
+                                let valid = !trimmed.is_empty();
+                                let create_color = if valid { tc.green } else { tc.fg_dim };
+                                if ui.add_enabled(valid,
+                                    egui::Button::new(RichText::new("Create").font(FontId::monospace(11.0)).color(create_color))
+                                        .fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, create_color))
+                                        .corner_radius(CornerRadius::same(3))
+                                ).clicked() || (valid && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                {
+                                    create_name = Some(trimmed);
+                                    close_after = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    self.app.branch_popup_new_mode = false;
+                                    self.app.branch_popup_new_name.clear();
+                                }
+                            });
+                        } else {
+                            // Switch existing branch
+                            ui.label(RichText::new("Switch branch")
+                                .font(FontId::monospace(11.0)).color(tc.fg_dim));
+                            ui.add_space(4.0);
+                            let resp = ui.add(egui::TextEdit::singleline(&mut self.app.branch_popup_query)
+                                .font(FontId::monospace(13.0))
+                                .hint_text("Search branches…")
+                                .desired_width(ui.available_width())
+                                .text_color(tc.fg));
+                            resp.request_focus();
+                            ui.add_space(6.0);
+
+                            let branches = crate::git::GitManager::list_branches(&root);
+                            let query = self.app.branch_popup_query.to_lowercase();
+                            let filtered: Vec<&crate::git::BranchInfo> = branches.iter()
+                                .filter(|b| query.is_empty() || b.name.to_lowercase().contains(&query))
+                                .collect();
+
+                            egui::ScrollArea::vertical()
+                                .max_height(320.0)
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    let mut last_was_local = true;
+                                    for b in &filtered {
+                                        if b.is_remote && last_was_local && !filtered.iter().all(|x| x.is_remote) {
+                                            ui.add_space(4.0);
+                                            ui.label(RichText::new("Remote")
+                                                .font(FontId::monospace(10.0)).color(tc.fg_dim));
+                                            ui.add_space(2.0);
+                                            last_was_local = false;
+                                        }
+                                        let prefix = if b.is_current { "● " } else { "  " };
+                                        let color = if b.is_current { tc.accent } else if b.is_remote { tc.fg_dim } else { tc.fg };
+                                        let btn = egui::Button::new(
+                                            RichText::new(format!("{}{}", prefix, b.name))
+                                                .font(FontId::monospace(12.0)).color(color)
+                                        )
+                                        .fill(Color32::TRANSPARENT)
+                                        .stroke(Stroke::NONE)
+                                        .min_size(Vec2::new(ui.available_width(), 22.0))
+                                        .corner_radius(CornerRadius::same(3));
+                                        if ui.add(btn).clicked() && !b.is_current {
+                                            checkout_target = Some(b.name.clone());
+                                            close_after = true;
+                                        }
+                                    }
+                                });
+
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+                            if ui.add(egui::Button::new(RichText::new("+ New Branch from current HEAD")
+                                .font(FontId::monospace(11.0)).color(tc.accent))
+                                .fill(Color32::TRANSPARENT).stroke(Stroke::NONE)
+                                .min_size(Vec2::new(ui.available_width(), 22.0))
+                                .corner_radius(CornerRadius::same(3))
+                            ).clicked() {
+                                self.app.branch_popup_new_mode = true;
+                                self.app.branch_popup_new_name.clear();
+                            }
+                        }
+                    });
+            });
+
+        // Click outside popup → close. We detect by checking if pointer was pressed and not over popup.
+        let pointer_pressed = ctx.input(|i| i.pointer.any_pressed());
+        if pointer_pressed {
+            let pos = ctx.input(|i| i.pointer.interact_pos());
+            if let Some(p) = pos {
+                if !inner.response.rect.contains(p) {
+                    self.app.branch_popup_open = false;
+                }
+            }
+        }
+        let _ = current_branch;
+
+        if close_after {
+            self.app.branch_popup_open = false;
+        }
+
+        // Apply git actions after the popup closure released its borrows.
+        if let Some(target) = checkout_target {
+            match crate::git::GitManager::checkout_branch(&root, &target) {
+                Ok(_) => {
+                    self.app.status_message = format!("Switched to '{}'", target);
+                    self.app.refresh_git_status();
+                }
+                Err(e) => self.app.status_message = format!("Checkout failed: {}", e),
+            }
+        }
+        if let Some(name) = create_name {
+            match crate::git::GitManager::create_branch(&root, &name) {
+                Ok(_) => {
+                    self.app.status_message = format!("Created branch '{}'", name);
+                    self.app.refresh_git_status();
+                }
+                Err(e) => self.app.status_message = format!("Create branch failed: {}", e),
+            }
+            self.app.branch_popup_new_mode = false;
+            self.app.branch_popup_new_name.clear();
+        }
+    }
+
+    /// Spawn `git <args>` in repo on a background thread. Result is logged but UI doesn't
+    /// block waiting on it — the user gets a status_message update via the next refresh.
+    fn spawn_git_cli(repo: String, args: Vec<String>, label: &'static str, _hint: Option<String>) {
+        std::thread::spawn(move || {
+            let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let _ = crate::git::GitManager::run_cli(&repo, &args_str);
+            // The next refresh_git_async (triggered by user clicking ↻ or focusing) will
+            // pick up the new branch/files state.
+            let _ = label; // currently unused but kept for future telemetry
+        });
     }
 
     fn render_search(&mut self, ui: &mut egui::Ui) {
@@ -465,7 +877,15 @@ impl CodeEditorApp {
 
         ui.horizontal(|ui| {
             ui.add_space(8.0);
-            ui.label(RichText::new("🔍").font(small()));
+            // ⌄/⌃ toggles the replace row, JetBrains-style.
+            let toggle_label = if self.app.global_search_show_replace { "⌄" } else { "⌃" };
+            if ui.add(egui::Button::new(RichText::new(toggle_label).font(small()).color(tc.fg_dim))
+                .fill(Color32::TRANSPARENT).min_size(Vec2::new(16.0, 18.0))
+                .corner_radius(CornerRadius::same(3)))
+                .on_hover_text("Toggle Replace").clicked()
+            {
+                self.app.global_search_show_replace = !self.app.global_search_show_replace;
+            }
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.app.global_search_input)
                     .font(small())
@@ -480,6 +900,75 @@ impl CodeEditorApp {
                 self.app.file_search_results.clear();
             }
         });
+
+        // ── Replace row (collapsible) ──
+        if self.app.global_search_show_replace {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.add(egui::Button::new(RichText::new("↳").font(small()).color(tc.fg_dim))
+                    .fill(Color32::TRANSPARENT).min_size(Vec2::new(16.0, 18.0))
+                    .corner_radius(CornerRadius::same(3)))
+                    .on_hover_text("Replace below");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.app.global_search_replace)
+                        .font(small())
+                        .desired_width(ui.available_width() - 12.0)
+                        .hint_text("Replace with…")
+                );
+            });
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                let n_files = self.app.global_search_results.iter()
+                    .map(|r| r.file_path.clone())
+                    .collect::<std::collections::HashSet<_>>().len();
+                let n_matches = self.app.global_search_results.len();
+                let can_replace = !self.app.global_search_input.is_empty()
+                    && self.app.file_tree.root_path.is_some()
+                    && n_matches > 0;
+                let color = if can_replace { tc.orange } else { tc.fg_dim };
+                let label = format!("Replace All in {} file{}", n_files, if n_files == 1 { "" } else { "s" });
+                if ui.add_enabled(can_replace,
+                    egui::Button::new(RichText::new(label).font(FontId::monospace(10.5)).color(color))
+                        .fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, color))
+                        .corner_radius(CornerRadius::same(3))
+                        .min_size(Vec2::new(0.0, 20.0))
+                ).on_hover_text("Replace every match across the project (no undo — commit first!)").clicked() {
+                    if let Some(root) = self.app.file_tree.root_path.clone() {
+                        let stats = crate::search::replace_in_project(
+                            &root,
+                            &self.app.global_search_input,
+                            &self.app.global_search_replace,
+                            self.app.find_case_sensitive,
+                            self.app.find_use_regex,
+                        );
+                        self.app.status_message = if stats.errors.is_empty() {
+                            format!("Replaced {} matches in {} files", stats.replacements, stats.files_changed)
+                        } else {
+                            format!("Replaced {} in {} files ({} errors)",
+                                stats.replacements, stats.files_changed, stats.errors.len())
+                        };
+                        // Reload open editors that may have been rewritten on disk.
+                        for editor in &mut self.app.editors {
+                            if let Some(ref p) = editor.file_path {
+                                if let Ok(content) = std::fs::read_to_string(p) {
+                                    editor.buffer.rope = ropey::Rope::from_str(&content);
+                                    editor.is_dirty = false;
+                                    editor.diagnostics_dirty = true;
+                                    editor.highlight_cache.clear();
+                                    editor.highlight_cache_lang.clear();
+                                    editor.fold_ranges.clear();
+                                    editor.fold_ranges_computed = false;
+                                }
+                            }
+                        }
+                        // Re-run search to refresh the results list with new state.
+                        self.app.last_search_trigger = Some(std::time::Instant::now());
+                    }
+                }
+            });
+        }
 
         ui.add_space(4.0);
 
@@ -566,7 +1055,7 @@ impl CodeEditorApp {
                         egui::Sense::click(),
                     );
                     if row_resp.hovered() {
-                        ui.painter().rect_filled(row_rect, Rounding::ZERO, tc.selection_bg);
+                        ui.painter().rect_filled(row_rect, CornerRadius::ZERO, tc.selection_bg);
                     }
                     let dot_c = file_icon_color(&fm.file_name, dark);
                     let painter = ui.painter();
@@ -636,7 +1125,7 @@ impl CodeEditorApp {
                     );
 
                     if row_resp.hovered() {
-                        ui.painter().rect_filled(row_rect, Rounding::ZERO, tc.selection_bg);
+                        ui.painter().rect_filled(row_rect, CornerRadius::ZERO, tc.selection_bg);
                     }
 
                     let painter = ui.painter();
@@ -689,7 +1178,7 @@ impl CodeEditorApp {
                                 Pos2::new(text_x + pre_w - 1.0, text_y - 1.0),
                                 Vec2::new(match_w + 2.0, 13.0),
                             ),
-                            Rounding::same(2), tc.accent.linear_multiply(0.15),
+                            CornerRadius::same(2), tc.accent.linear_multiply(0.15),
                         );
                         painter.text(
                             Pos2::new(text_x + pre_w, text_y), egui::Align2::LEFT_TOP,

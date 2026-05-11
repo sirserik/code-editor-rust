@@ -40,10 +40,10 @@ impl CodeEditorApp {
 
                 painter.rect_filled(
                     bg_rect.translate(Vec2::new(2.0, 2.0)),
-                    Rounding::same(4), Color32::from_black_alpha(80),
+                    CornerRadius::same(4), Color32::from_black_alpha(80),
                 );
-                painter.rect_filled(bg_rect, Rounding::same(4), self.tc.sidebar_bg);
-                painter.rect_stroke(bg_rect, Rounding::same(4), Stroke::new(1.0, self.tc.accent), egui::StrokeKind::Outside);
+                painter.rect_filled(bg_rect, CornerRadius::same(4), self.tc.sidebar_bg);
+                painter.rect_stroke(bg_rect, CornerRadius::same(4), Stroke::new(1.0, self.tc.accent), egui::StrokeKind::Outside);
                 painter.galley(bg_rect.min + padding, galley, Color32::PLACEHOLDER);
             }
 
@@ -54,13 +54,13 @@ impl CodeEditorApp {
 
     pub(super) fn render_overlays(&mut self, ctx: &egui::Context) {
         let dark = self.app.settings.theme.resolved() != Theme::Light;
-        let popup_frame = |accent: Color32| -> egui::Frame {
+        let popup_frame = || -> egui::Frame {
             let popup_bg = if dark { Color32::from_rgb(30, 31, 42) } else { Color32::from_rgb(255, 255, 255) };
             let shadow_alpha = if dark { 50 } else { 20 };
             egui::Frame::NONE
                 .fill(popup_bg)
                 .stroke(Stroke::new(1.0, if dark { Color32::from_rgb(55, 56, 70) } else { Color32::from_rgb(210, 210, 215) }))
-                .rounding(Rounding::same(10))
+                .corner_radius(CornerRadius::same(10))
                 .inner_margin(14.0)
                 .shadow(egui::epaint::Shadow {
                     offset: [0, 8],
@@ -73,7 +73,7 @@ impl CodeEditorApp {
         match self.app.focus {
             Focus::CommandPalette => {
                 egui::Area::new(egui::Id::new("pal")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.25, 50.0)).show(ctx, |ui| {
-                    popup_frame(self.tc.accent).show(ui, |ui| {
+                    popup_frame().show(ui, |ui| {
                         ui.set_width(ctx.screen_rect().width() * 0.5);
                         let r = ui.add(egui::TextEdit::singleline(&mut self.app.palette_input)
                             .font(mono()).hint_text("> Command...").desired_width(ui.available_width()).text_color(self.tc.fg));
@@ -95,7 +95,7 @@ impl CodeEditorApp {
                             let bg = if s { self.tc.selection_bg } else { Color32::TRANSPARENT };
                             let rr = ui.add(egui::Button::new(
                                 RichText::new(format!("  {}", item.name)).font(small()).color(if s { self.tc.fg } else { self.tc.fg_dim })
-                            ).fill(bg).min_size(Vec2::new(ui.available_width(), 26.0)).rounding(Rounding::same(4)).stroke(Stroke::NONE));
+                            ).fill(bg).min_size(Vec2::new(ui.available_width(), 26.0)).corner_radius(CornerRadius::same(4)).stroke(Stroke::NONE));
                             if rr.clicked() || (enter && s) {
                                 let a = item.action.clone();
                                 self.app.focus = Focus::Editor;
@@ -113,7 +113,7 @@ impl CodeEditorApp {
             }
             Focus::QuickOpen => {
                 egui::Area::new(egui::Id::new("qo")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.25, 50.0)).show(ctx, |ui| {
-                    popup_frame(self.tc.accent).show(ui, |ui| {
+                    popup_frame().show(ui, |ui| {
                         ui.set_width(ctx.screen_rect().width() * 0.5);
                         let old = self.app.quick_open_input.clone();
                         let r = ui.add(egui::TextEdit::singleline(&mut self.app.quick_open_input)
@@ -134,7 +134,7 @@ impl CodeEditorApp {
                             let s = i == self.app.quick_open_selected;
                             let rr = ui.add(egui::Button::new(
                                 RichText::new(format!("  {}", e.name)).font(small()).color(if s { self.tc.fg } else { self.tc.fg_dim })
-                            ).fill(if s { self.tc.selection_bg } else { Color32::TRANSPARENT }).min_size(Vec2::new(ui.available_width(), 26.0)).rounding(Rounding::same(4)).stroke(Stroke::NONE));
+                            ).fill(if s { self.tc.selection_bg } else { Color32::TRANSPARENT }).min_size(Vec2::new(ui.available_width(), 26.0)).corner_radius(CornerRadius::same(4)).stroke(Stroke::NONE));
                             if rr.clicked() || (enter && s) { let p = e.path.clone(); self.app.open_file(&p); self.app.focus = Focus::Editor; return; }
                         }
                         if enter && !res.is_empty() { let p = res[self.app.quick_open_selected].path.clone(); self.app.open_file(&p); self.app.focus = Focus::Editor; }
@@ -144,7 +144,7 @@ impl CodeEditorApp {
             Focus::FindReplace => {
                 let enter_find = ctx.input(|i| i.key_pressed(egui::Key::Enter));
                 egui::Area::new(egui::Id::new("fr")).anchor(egui::Align2::RIGHT_TOP, [-20.0, 50.0]).show(ctx, |ui| {
-                    popup_frame(self.tc.accent).show(ui, |ui| {
+                    popup_frame().show(ui, |ui| {
                         ui.set_width(350.0);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("Find").font(small()).color(self.tc.fg_dim));
@@ -193,7 +193,7 @@ impl CodeEditorApp {
             Focus::GoToLine => {
                 let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter));
                 egui::Area::new(egui::Id::new("gl")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.35, 50.0)).show(ctx, |ui| {
-                    popup_frame(self.tc.accent).show(ui, |ui| {
+                    popup_frame().show(ui, |ui| {
                         ui.set_width(220.0);
                         ui.label(RichText::new("Go to Line").font(small()).color(self.tc.fg_dim));
                         ui.add_space(4.0);
@@ -215,7 +215,7 @@ impl CodeEditorApp {
                 let hint = if is_file { "filename.ext" } else { "folder-name" };
                 let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter));
                 egui::Area::new(egui::Id::new("dialog")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.3, 80.0)).show(ctx, |ui| {
-                    popup_frame(self.tc.accent).show(ui, |ui| {
+                    popup_frame().show(ui, |ui| {
                         ui.set_width(320.0);
                         ui.label(RichText::new(title).font(mono()).color(self.tc.accent));
                         ui.add_space(6.0);
@@ -255,7 +255,7 @@ impl CodeEditorApp {
             Focus::RenameDialog => {
                 let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter));
                 egui::Area::new(egui::Id::new("rn")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.3, 80.0)).show(ctx, |ui| {
-                    popup_frame(self.tc.accent).show(ui, |ui| {
+                    popup_frame().show(ui, |ui| {
                         ui.set_width(320.0);
                         ui.label(RichText::new("Rename").font(mono()).color(self.tc.accent));
                         ui.add_space(6.0);
@@ -278,7 +278,7 @@ impl CodeEditorApp {
             Focus::SaveAsDialog => {
                 let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter));
                 egui::Area::new(egui::Id::new("saveas")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.2, 80.0)).show(ctx, |ui| {
-                    popup_frame(self.tc.accent).show(ui, |ui| {
+                    popup_frame().show(ui, |ui| {
                         ui.set_width(400.0);
                         ui.label(RichText::new("Save As").font(mono()).color(self.tc.accent));
                         ui.add_space(6.0);
@@ -308,7 +308,7 @@ impl CodeEditorApp {
             Focus::CommitInput => {
                 let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
                 egui::Area::new(egui::Id::new("commit")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.25, 80.0)).show(ctx, |ui| {
-                    popup_frame(self.tc.green).show(ui, |ui| {
+                    popup_frame().show(ui, |ui| {
                         ui.set_width(ctx.screen_rect().width() * 0.5);
                         ui.label(RichText::new("Commit").font(mono()).color(self.tc.green));
                         ui.add_space(4.0);
@@ -331,7 +331,7 @@ impl CodeEditorApp {
                             if ui.add_enabled(can_commit,
                                 egui::Button::new(RichText::new(" Commit (⌘+Enter) ").color(Color32::WHITE))
                                     .fill(if can_commit { Color32::from_rgb(40, 160, 80) } else { Color32::from_rgb(80, 80, 80) })
-                                    .rounding(Rounding::same(4))
+                                    .corner_radius(CornerRadius::same(4))
                             ).clicked() || (enter_pressed && can_commit) {
                                 let msg = self.app.commit_message.clone();
                                 if let Some(ref root) = self.app.file_tree.root_path.clone() {
@@ -348,7 +348,7 @@ impl CodeEditorApp {
                             }
                             ui.add_space(8.0);
                             if ui.add(egui::Button::new(RichText::new(" Cancel ").color(self.tc.fg))
-                                .fill(self.tc.sidebar_bg).rounding(Rounding::same(4))
+                                .fill(self.tc.sidebar_bg).corner_radius(CornerRadius::same(4))
                                 .stroke(Stroke::new(1.0, self.tc.border))).clicked()
                             {
                                 self.app.focus = Focus::Editor;
@@ -360,7 +360,7 @@ impl CodeEditorApp {
             Focus::DeleteConfirm => {
                 if let Some(entry) = self.app.file_tree.selected_entry().cloned() {
                     egui::Area::new(egui::Id::new("del")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.3, 80.0)).show(ctx, |ui| {
-                        popup_frame(self.tc.red).show(ui, |ui| {
+                        popup_frame().show(ui, |ui| {
                             ui.set_width(320.0);
                             ui.label(RichText::new(format!("Delete \"{}\"?", entry.name)).font(mono()).color(self.tc.red));
                             ui.add_space(4.0);
@@ -368,7 +368,7 @@ impl CodeEditorApp {
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
                                 if ui.add(egui::Button::new(RichText::new(" Delete ").color(Color32::WHITE))
-                                    .fill(Color32::from_rgb(200, 60, 60)).rounding(Rounding::same(4))).clicked()
+                                    .fill(Color32::from_rgb(200, 60, 60)).corner_radius(CornerRadius::same(4))).clicked()
                                 {
                                     let _ = self.app.file_tree.delete_entry(&entry.path);
                                     self.app.status_message = format!("Deleted: {}", entry.name);
@@ -376,7 +376,7 @@ impl CodeEditorApp {
                                 }
                                 ui.add_space(8.0);
                                 if ui.add(egui::Button::new(RichText::new(" Cancel ").color(self.tc.fg))
-                                    .fill(self.tc.sidebar_bg).rounding(Rounding::same(4)).stroke(Stroke::new(1.0, self.tc.border))).clicked()
+                                    .fill(self.tc.sidebar_bg).corner_radius(CornerRadius::same(4)).stroke(Stroke::new(1.0, self.tc.border))).clicked()
                                 {
                                     self.app.focus = Focus::Editor;
                                 }
@@ -387,7 +387,7 @@ impl CodeEditorApp {
             }
             Focus::About => {
                 egui::Area::new(egui::Id::new("about")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.2, 50.0)).show(ctx, |ui| {
-                    popup_frame(self.tc.accent).show(ui, |ui| {
+                    popup_frame().show(ui, |ui| {
                         ui.set_width(ctx.screen_rect().width() * 0.6);
 
                         // Title
@@ -507,7 +507,7 @@ impl CodeEditorApp {
                             ui.label(RichText::new("Built with Rust + egui  •  MIT License").font(FontId::monospace(10.0)).color(self.tc.fg_dim));
                             ui.add_space(4.0);
                             if ui.add(egui::Button::new(RichText::new(" Close (Esc) ").color(self.tc.fg))
-                                .fill(self.tc.sidebar_bg).rounding(Rounding::same(4))
+                                .fill(self.tc.sidebar_bg).corner_radius(CornerRadius::same(4))
                                 .stroke(Stroke::new(1.0, self.tc.border))).clicked()
                             {
                                 self.app.focus = Focus::Editor;

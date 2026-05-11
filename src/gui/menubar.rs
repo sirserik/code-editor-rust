@@ -32,6 +32,10 @@ impl CodeEditorApp {
                             self.app.close_tab(i);
                             ui.close_menu();
                         }
+                        if ui.button("Close Project    ⌘⇧W").clicked() {
+                            self.app.close_project();
+                            ui.close_menu();
+                        }
                         ui.separator();
                         if ui.button("Quit              ⌘Q").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -163,22 +167,32 @@ impl CodeEditorApp {
                         let active = i == self.app.active_editor;
                         let text_c = if active { self.tc.fg } else { self.tc.fg_dim };
                         let bg = if active { self.tc.bg } else { Color32::TRANSPARENT };
-                        let rounding = Rounding { nw: 6, ne: 6, sw: 0, se: 0 };
+                        let rounding = CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
 
-                        let frame = egui::Frame::NONE.fill(bg).rounding(rounding)
+                        let frame = egui::Frame::NONE.fill(bg).corner_radius(rounding)
                             .inner_margin(egui::Margin { left: 10, right: 4, top: 4, bottom: 4 });
 
                         let frame_resp = frame.show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
-                                // Dirty indicator as colored dot
-                                let dot = if dirty { " ●" } else { "" };
-                                let dot_color = if dirty { self.tc.orange } else { text_c };
-                                let label_resp = ui.add(egui::Label::new(
-                                    RichText::new(format!("{}{}", name, dot)).font(small()).color(
-                                        if dirty && !dot.is_empty() { text_c } else { text_c }
-                                    )
-                                ).sense(egui::Sense::click()));
+                                let mut job = egui::text::LayoutJob::default();
+                                let name_fmt = egui::text::TextFormat {
+                                    font_id: small(),
+                                    color: text_c,
+                                    ..Default::default()
+                                };
+                                job.append(&name, 0.0, name_fmt);
+                                if dirty {
+                                    let dot_fmt = egui::text::TextFormat {
+                                        font_id: small(),
+                                        color: self.tc.orange,
+                                        ..Default::default()
+                                    };
+                                    job.append(" ●", 0.0, dot_fmt);
+                                }
+                                let label_resp = ui.add(
+                                    egui::Label::new(job).sense(egui::Sense::click())
+                                );
                                 if label_resp.clicked() {
                                     self.app.active_editor = i;
                                     self.app.focus = Focus::Editor;
@@ -222,7 +236,7 @@ impl CodeEditorApp {
                                 // Red hover effect on close button
                                 if close_resp.hovered() {
                                     let cr = close_resp.rect;
-                                    ui.painter().rect_filled(cr, Rounding::same(3),
+                                    ui.painter().rect_filled(cr, CornerRadius::same(3),
                                         if dark { Color32::from_rgb(180, 50, 50) } else { Color32::from_rgb(220, 80, 80) });
                                     ui.painter().text(cr.center(), egui::Align2::CENTER_CENTER, "×",
                                         FontId::monospace(14.0), Color32::WHITE);
@@ -241,7 +255,7 @@ impl CodeEditorApp {
                                     Pos2::new(tab_rect.min.x + 2.0, tab_rect.max.y - 2.0),
                                     Vec2::new(tab_rect.width() - 4.0, 2.0),
                                 ),
-                                Rounding::same(1), self.tc.accent,
+                                CornerRadius::same(1), self.tc.accent,
                             );
                         }
                     }
@@ -255,11 +269,7 @@ impl CodeEditorApp {
     pub(super) fn render_status(&mut self, ctx: &egui::Context) {
         let tc = self.tc;
         let dark = self.app.settings.theme.resolved() != Theme::Light;
-        let status_bg = if dark {
-            tc.sidebar_bg // Use sidebar color for consistency
-        } else {
-            Color32::from_rgb(0, 122, 204) // VS Code blue for light theme
-        };
+        let status_bg = tc.status_bg;
         let status_fg = if dark { tc.fg_dim } else { Color32::WHITE };
         let status_accent = if dark { tc.fg } else { Color32::WHITE };
         let sf = FontId::monospace(11.5);
@@ -288,13 +298,28 @@ impl CodeEditorApp {
                     }
                     let err_count = ed.diagnostics.len();
                     if err_count > 0 {
-                        ui.label(RichText::new(format!("⚠ {}", err_count)).font(sf.clone()).color(
-                            if dark { tc.red } else { Color32::from_rgb(255, 180, 180) }
-                        ));
+                        let err_color = if dark { tc.red } else { Color32::from_rgb(255, 180, 180) };
+                        ui.label(RichText::new(format!("⚠ {}", err_count)).font(sf.clone()).color(err_color));
+                        // Show first diagnostic on the current line, if any
+                        if let Some(diag) = ed.diagnostics.iter().find(|d| d.line == ed.cursor.line) {
+                            ui.label(RichText::new(&diag.message).font(sf.clone()).color(err_color));
+                        }
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 16.0;
+                        // Perf HUD: total frame + per-section breakdown
+                        if !self.frame_times_ms.is_empty() {
+                            let n = self.frame_times_ms.len() as f32;
+                            let avg = self.frame_times_ms.iter().sum::<f32>() / n;
+                            let max = self.frame_times_ms.iter().cloned().fold(0.0_f32, f32::max);
+                            let perf_color = if max > 16.7 { tc.orange } else { status_fg };
+                            let [mb, tabs, st, sb, ed_s] = self.section_times_ms;
+                            ui.label(RichText::new(format!(
+                                "ed {:.1} sb {:.1} tabs {:.1} mb {:.1} st {:.1}  |  {:.1}/{:.1}ms",
+                                ed_s, sb, tabs, mb, st, avg, max
+                            )).font(sf.clone()).color(perf_color));
+                        }
                         // Right side items (rendered right-to-left)
                         let theme_name = self.app.settings.theme.name();
                         let theme_btn = ui.add(egui::Button::new(

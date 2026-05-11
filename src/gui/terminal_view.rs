@@ -30,7 +30,7 @@ impl CodeEditorApp {
                 // Header bar
                 let (hdr, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), egui::Sense::hover());
                 let hdr_bg = if dark { Color32::from_rgb(38, 40, 48) } else { Color32::from_rgb(243, 243, 243) };
-                ui.painter().rect_filled(hdr, Rounding::ZERO, hdr_bg);
+                ui.painter().rect_filled(hdr, CornerRadius::ZERO, hdr_bg);
                 ui.painter().text(
                     Pos2::new(hdr.min.x + 12.0, hdr.min.y + 7.0),
                     egui::Align2::LEFT_TOP,
@@ -46,7 +46,7 @@ impl CodeEditorApp {
                 ui.painter().text(close_rect.center(), egui::Align2::CENTER_CENTER,
                     "×", FontId::monospace(14.0), tc.fg_dim);
                 if close_resp.hovered() {
-                    ui.painter().rect_filled(close_rect, Rounding::same(3),
+                    ui.painter().rect_filled(close_rect, CornerRadius::same(3),
                         if dark { Color32::from_rgb(180, 50, 50) } else { Color32::from_rgb(220, 80, 80) });
                     ui.painter().text(close_rect.center(), egui::Align2::CENTER_CENTER,
                         "×", FontId::monospace(14.0), Color32::WHITE);
@@ -75,7 +75,7 @@ impl CodeEditorApp {
                                         );
                                         // Cursor highlight
                                         if row == grid.cursor_row {
-                                            ui.painter().rect_filled(rect, Rounding::ZERO,
+                                            ui.painter().rect_filled(rect, CornerRadius::ZERO,
                                                 if dark { Color32::from_rgb(40, 44, 52) } else { Color32::from_rgb(248, 248, 248) });
                                         }
                                         ui.painter().text(

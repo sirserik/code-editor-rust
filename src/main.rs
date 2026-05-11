@@ -32,12 +32,21 @@ fn main() -> eframe::Result<()> {
     }
     // No else — if no args, start with empty editor (user opens folder via menu)
 
+    // Bake the Dock icon into the binary so it survives terminal launches (where there
+    // is no .app bundle context for macOS to discover Info.plist + AppIcon.icns).
+    let icon = egui::IconData {
+        rgba: include_bytes!("../assets/icon-256.rgba").to_vec(),
+        width: 256,
+        height: 256,
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
             .with_min_inner_size([600.0, 400.0])
-            .with_title("Code Editor"),
-        renderer: eframe::Renderer::Glow,
+            .with_title("Code Editor")
+            .with_icon(icon),
+        renderer: eframe::Renderer::Wgpu,
         vsync: true,
         ..Default::default()
     };

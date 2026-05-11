@@ -26,7 +26,7 @@ pub enum FileStatus {
 }
 
 impl FileStatus {
-    pub fn symbol(&self) -> &str {
+    pub fn symbol(&self) -> &'static str {
         match self {
             FileStatus::Modified => "M",
             FileStatus::Added => "A",
@@ -53,10 +53,6 @@ impl GitManager {
         Self {
             cache: HashMap::new(),
         }
-    }
-
-    pub fn is_repo(path: &str) -> bool {
-        Repository::discover(path).is_ok()
     }
 
     pub fn get_status(&mut self, repo_path: &str) -> GitStatus {
@@ -205,32 +201,6 @@ impl GitManager {
         Ok(())
     }
 
-    pub fn diff_file(&self, repo_path: &str, file_path: &str) -> Result<String, String> {
-        let repo = Repository::discover(repo_path).map_err(|e| e.to_string())?;
-        let mut opts = git2::DiffOptions::new();
-        opts.pathspec(file_path);
-
-        let diff = repo
-            .diff_index_to_workdir(None, Some(&mut opts))
-            .map_err(|e| e.to_string())?;
-
-        let mut result = String::new();
-        diff.print(git2::DiffFormat::Patch, |_, _, line| {
-            let prefix = match line.origin() {
-                '+' => "+",
-                '-' => "-",
-                ' ' => " ",
-                _ => "",
-            };
-            result.push_str(prefix);
-            result.push_str(&String::from_utf8_lossy(line.content()));
-            true
-        })
-        .map_err(|e| e.to_string())?;
-
-        Ok(result)
-    }
-
     pub fn blame_line(&self, repo_path: &str, file_path: &str, line: usize) -> Option<String> {
         let repo = Repository::discover(repo_path).ok()?;
         let blame = repo.blame_file(std::path::Path::new(file_path), None).ok()?;
@@ -267,6 +237,92 @@ impl GitManager {
         self.invalidate_cache(repo_path);
         Ok(())
     }
+
+    /// Run a git CLI subcommand in the repo. We shell out to the system `git` for network
+    /// ops (pull/push/fetch) because libgit2 auth (SSH keys, credential helper, 2FA tokens)
+    /// is a maze; the user's `git` config "just works" with whatever they've already set up.
+    pub fn run_cli(repo_path: &str, args: &[&str]) -> Result<String, String> {
+        let output = std::process::Command::new("git")
+            .arg("-C").arg(repo_path)
+            .args(args)
+            .output()
+            .map_err(|e| format!("Failed to run git: {}", e))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        }
+    }
+
+    /// List local + remote branches. Returns sorted: current first, then local, then remote.
+    pub fn list_branches(repo_path: &str) -> Vec<BranchInfo> {
+        let repo = match Repository::discover(repo_path) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        let head_name = repo.head().ok()
+            .and_then(|h| h.shorthand().map(|s| s.to_string()));
+        // Local
+        if let Ok(iter) = repo.branches(Some(git2::BranchType::Local)) {
+            for b in iter.flatten() {
+                let (branch, _) = b;
+                if let Ok(Some(name)) = branch.name() {
+                    let is_current = head_name.as_deref() == Some(name);
+                    out.push(BranchInfo { name: name.to_string(), is_remote: false, is_current });
+                }
+            }
+        }
+        // Remote
+        if let Ok(iter) = repo.branches(Some(git2::BranchType::Remote)) {
+            for b in iter.flatten() {
+                let (branch, _) = b;
+                if let Ok(Some(name)) = branch.name() {
+                    // skip the HEAD symref like "origin/HEAD"
+                    if name.ends_with("/HEAD") { continue; }
+                    out.push(BranchInfo { name: name.to_string(), is_remote: true, is_current: false });
+                }
+            }
+        }
+        out.sort_by(|a, b| {
+            b.is_current.cmp(&a.is_current)
+                .then_with(|| a.is_remote.cmp(&b.is_remote))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        out
+    }
+
+    /// Checkout an existing branch. For remote branches like `origin/feat`, creates a local
+    /// tracking branch `feat` automatically (matches `git checkout` behaviour).
+    pub fn checkout_branch(repo_path: &str, branch: &str) -> Result<(), String> {
+        // If user picked a remote branch (e.g. "origin/foo/bar"), strip the remote prefix
+        // for the local name (-> "foo/bar"). `git checkout <name>` then creates the local
+        // tracking branch automatically when one doesn't exist.
+        let is_remote_branch = Repository::discover(repo_path)
+            .ok()
+            .map(|repo| repo.find_branch(branch, git2::BranchType::Remote).is_ok())
+            .unwrap_or(false);
+        let local_name: &str = if is_remote_branch {
+            match branch.find('/') {
+                Some(idx) => &branch[idx + 1..],
+                None => branch,
+            }
+        } else {
+            branch
+        };
+        Self::run_cli(repo_path, &["checkout", local_name]).map(|_| ())
+    }
+
+    pub fn create_branch(repo_path: &str, name: &str) -> Result<(), String> {
+        Self::run_cli(repo_path, &["checkout", "-b", name]).map(|_| ())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BranchInfo {
+    pub name: String,
+    pub is_remote: bool,
+    pub is_current: bool,
 }
 
 #[cfg(test)]

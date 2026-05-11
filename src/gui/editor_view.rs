@@ -115,7 +115,7 @@ impl CodeEditorApp {
                     // Header with filename
                     let (hdr, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), egui::Sense::hover());
                     let hdr_bg = tc.tab_bar_bg;
-                    ui.painter().rect_filled(hdr, Rounding::ZERO, hdr_bg);
+                    ui.painter().rect_filled(hdr, CornerRadius::ZERO, hdr_bg);
                     ui.painter().text(
                         Pos2::new(hdr.min.x + 12.0, hdr.min.y + 6.0),
                         egui::Align2::LEFT_TOP, &split_name,
@@ -199,12 +199,15 @@ impl CodeEditorApp {
                 let idle_enough = ed.last_edit_time
                     .map(|t| t.elapsed().as_millis() > 1000)
                     .unwrap_or(true);
-                if ed.fold_ranges.is_empty() && !ed.is_dirty {
+                if !ed.fold_ranges_computed && !ed.is_dirty {
                     ed.compute_fold_ranges();
                 } else if ed.diagnostics_dirty && idle_enough {
                     ed.compute_fold_ranges();
-                    let lang_for_diag = ed.file_path.as_ref().map(|p| syntax::detect_language(p).to_string()).unwrap_or("text".into());
                     let content = ed.buffer.text();
+                    let first_line = content.lines().next().unwrap_or("");
+                    let lang_for_diag = ed.file_path.as_ref()
+                        .map(|p| syntax::detect_language_with_first_line(p, first_line).to_string())
+                        .unwrap_or("text".into());
                     ed.diagnostics = syntax::check_syntax(&content, &lang_for_diag);
                     ed.diagnostics_dirty = false;
                 }
@@ -213,13 +216,18 @@ impl CodeEditorApp {
             // Update syntax highlight cache — only for visible lines + small margin
             {
                 let ed = &mut self.app.editors[self.app.active_editor];
-                let lang = ed.file_path.as_ref().map(|p| syntax::detect_language(p).to_string()).unwrap_or("text".into());
-                let lc = ed.line_count();
-                let lang_changed = ed.highlight_cache_lang != lang;
+                // Detect language only when cache is empty (first frame) or after invalidation.
+                // Re-running on every frame allocated a String per frame for no reason.
+                let lang_changed = ed.highlight_cache_lang.is_empty();
                 if lang_changed {
+                    let first_line = ed.buffer.get_line(0);
+                    let lang = ed.file_path.as_ref()
+                        .map(|p| syntax::detect_language_with_first_line(p, &first_line).to_string())
+                        .unwrap_or("text".into());
                     ed.highlight_cache.clear();
                     ed.highlight_cache_lang = lang;
                 }
+                let lc = ed.line_count();
                 // Ensure cache is right size
                 ed.highlight_cache.resize(lc, Vec::new());
                 // Only highlight visible range + margin (lazy)
@@ -242,7 +250,6 @@ impl CodeEditorApp {
 
             let ed = &self.app.editors[self.app.active_editor];
             let lc = ed.line_count();
-            let lang = ed.highlight_cache_lang.clone();
             let gutter_digits = format!("{}", lc).len().max(3);
             let fold_w = cw * 1.8;
             let gw = if show_ln { cw * (gutter_digits as f32 + 1.5) + fold_w } else { fold_w };
@@ -367,6 +374,8 @@ impl CodeEditorApp {
                             let ed = &mut self.app.editors[self.app.active_editor];
                             match key {
                                 // Movement with Shift = extend selection
+                                egui::Key::ArrowUp if modifiers.command => { ed.selection = None; ed.move_to_top(); },
+                                egui::Key::ArrowDown if modifiers.command => { ed.selection = None; ed.move_to_bottom(); },
                                 egui::Key::ArrowUp if modifiers.alt => ed.move_line_up(),
                                 egui::Key::ArrowDown if modifiers.alt => ed.move_line_down(),
                                 egui::Key::ArrowUp => {
@@ -465,15 +474,23 @@ impl CodeEditorApp {
             // Click handling — single click, double-click, drag
             let minimap_w_check = if self.app.show_minimap { 80.0 } else { 0.0 };
 
+            // Sub-pixel-aware row mapping for click positions
+            let ed_scroll = self.app.editors[self.app.active_editor].scroll_offset;
+            let click_so = ed_scroll.floor().max(0.0) as usize;
+            let click_pixel_offset = (ed_scroll - click_so as f32) * lh;
+            let rel_to_row = |rel_y: f32| -> usize {
+                ((rel_y + click_pixel_offset).max(0.0) / lh) as usize
+            };
+
             // Double-click to select word
             if response.double_clicked() {
                 self.app.focus = Focus::Editor;
                 if let Some(pos) = response.interact_pointer_pos() {
                     if !(self.app.show_minimap && pos.x > rect.max.x - minimap_w_check) {
                         let rel = pos - rect.min;
-                        let row_idx = (rel.y / lh) as usize;
+                        let row_idx = rel_to_row(rel.y);
                         let ed = &mut self.app.editors[self.app.active_editor];
-                        let vis_lines = ed.visible_lines(ed.scroll_offset as usize, ed.viewport_height + 2);
+                        let vis_lines = ed.visible_lines(click_so, ed.viewport_height + 2);
                         let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
                         let cc = ((rel.x - gw).max(0.0) / cw) as usize;
                         ed.cursor.line = actual_line;
@@ -486,9 +503,9 @@ impl CodeEditorApp {
                 if let Some(pos) = response.interact_pointer_pos() {
                     if !(self.app.show_minimap && pos.x > rect.max.x - minimap_w_check) {
                         let rel = pos - rect.min;
-                        let row_idx = (rel.y / lh) as usize;
+                        let row_idx = rel_to_row(rel.y);
                         let ed = &mut self.app.editors[self.app.active_editor];
-                        let vis_lines = ed.visible_lines(ed.scroll_offset as usize, ed.viewport_height + 2);
+                        let vis_lines = ed.visible_lines(click_so, ed.viewport_height + 2);
                         let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
 
                         if rel.x < gw {
@@ -514,9 +531,9 @@ impl CodeEditorApp {
                 if let Some(pos) = response.interact_pointer_pos() {
                     if !(self.app.show_minimap && pos.x > rect.max.x - minimap_w_check) {
                         let rel = pos - rect.min;
-                        let row_idx = (rel.y / lh) as usize;
+                        let row_idx = rel_to_row(rel.y);
                         let ed = &mut self.app.editors[self.app.active_editor];
-                        let vis_lines = ed.visible_lines(ed.scroll_offset as usize, ed.viewport_height + 2);
+                        let vis_lines = ed.visible_lines(click_so, ed.viewport_height + 2);
                         let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
                         let cc = ((rel.x - gw).max(0.0) / cw) as usize;
                         let col = cc.min(ed.buffer.line_len(actual_line));
@@ -533,9 +550,9 @@ impl CodeEditorApp {
                 if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
                     if !(self.app.show_minimap && pos.x > rect.max.x - minimap_w_check) {
                         let rel = pos - rect.min;
-                        let row_idx = (rel.y / lh) as usize;
+                        let row_idx = rel_to_row(rel.y);
                         let ed = &mut self.app.editors[self.app.active_editor];
-                        let vis_lines = ed.visible_lines(ed.scroll_offset as usize, ed.viewport_height + 2);
+                        let vis_lines = ed.visible_lines(click_so, ed.viewport_height + 2);
                         let actual_line = vis_lines.get(row_idx).copied().unwrap_or(lc.saturating_sub(1)).min(lc.saturating_sub(1));
                         let cc = ((rel.x - gw).max(0.0) / cw) as usize;
                         let col = cc.min(ed.buffer.line_len(actual_line));
@@ -613,7 +630,7 @@ impl CodeEditorApp {
                 }
             });
 
-            // Scroll
+            // Scroll — Zed-style sub-pixel smooth scrolling
             let cmd_held = ui.input(|i| i.modifiers.command);
             let sd = ui.input(|i| i.smooth_scroll_delta.y);
             if sd != 0.0 {
@@ -623,21 +640,26 @@ impl CodeEditorApp {
                     self.app.settings.save();
                     self.app.status_message = format!("Zoom: {}px", self.app.settings.font_size as u32);
                 } else {
-                    // Zed-style: immediate integer line scroll (no sub-pixel = no jitter)
                     let ed = &mut self.app.editors[self.app.active_editor];
                     let max_scroll = (lc.saturating_sub(1) + ed.viewport_height / 2) as f32;
-                    let scroll_lines = -sd / lh;
-                    ed.scroll_offset = (ed.scroll_offset + scroll_lines).round().clamp(0.0, max_scroll);
+                    // Sub-pixel scroll: keep fractional part for smooth motion
+                    ed.scroll_offset = (ed.scroll_offset - sd / lh).clamp(0.0, max_scroll);
                 }
+                // Force continuous repaint during scroll inertia — without this, egui only
+                // repaints on raw input events, dropping FPS while smooth_scroll_delta decays.
+                ctx.request_repaint();
             }
 
             let painter = ui.painter_at(rect);
-            let vis = (rect.height() / lh) as usize;
+            let vis = (rect.height() / lh).ceil() as usize;
             self.app.editors[self.app.active_editor].viewport_height = vis.max(1);
             let ed = &self.app.editors[self.app.active_editor];
-            let so = ed.scroll_offset as usize;
+            // Sub-pixel scroll math: floor for line index, fractional part → pixel offset
+            let so = ed.scroll_offset.floor().max(0.0) as usize;
+            let pixel_offset = (ed.scroll_offset - so as f32) * lh;
             let text_y_offset = LINE_SPACING / 2.0;
 
+            // +2 ensures partial top + bottom rows are present
             let vis_lines = ed.visible_lines(so, vis + 2);
             let bracket_depths = compute_bracket_depths(&self.app, &vis_lines);
 
@@ -660,7 +682,7 @@ impl CodeEditorApp {
             let mut ln_buf = String::with_capacity(8);
 
             for (row, &li) in vis_lines.iter().enumerate() {
-                let y = rect.min.y + row as f32 * lh;
+                let y = rect.min.y + row as f32 * lh - pixel_offset;
                 if y > rect.max.y { break; }
                 if y + lh < rect.min.y { continue; }
 
@@ -668,7 +690,7 @@ impl CodeEditorApp {
                 if li == cursor_line {
                     painter.rect_filled(
                         Rect::from_min_size(Pos2::new(rect.min.x, y), Vec2::new(rect.width(), lh)),
-                        Rounding::ZERO, self.tc.current_line_bg,
+                        CornerRadius::ZERO, self.tc.current_line_bg,
                     );
                 }
 
@@ -681,7 +703,7 @@ impl CodeEditorApp {
                         };
                         painter.rect_filled(
                             Rect::from_min_size(Pos2::new(rect.min.x + 1.0, y), Vec2::new(3.0, lh)),
-                            Rounding::ZERO, diff_color,
+                            CornerRadius::ZERO, diff_color,
                         );
                     }
                 }
@@ -711,7 +733,7 @@ impl CodeEditorApp {
                             painter.rect_filled(
                                 Rect::from_min_size(Pos2::new(line_end_x, y + 2.0),
                                     Vec2::new(cw * 6.0, lh - 4.0)),
-                                Rounding::same(3), if dark { Color32::from_rgb(40, 44, 65) } else { Color32::from_rgb(228, 228, 228) });
+                                CornerRadius::same(3), if dark { Color32::from_rgb(40, 44, 65) } else { Color32::from_rgb(228, 228, 228) });
                             ln_buf.clear();
                             let _ = write!(ln_buf, "⋯ {}", folded_count);
                             painter.text(Pos2::new(line_end_x + cw * 0.5, y + text_y_offset), egui::Align2::LEFT_TOP,
@@ -745,7 +767,7 @@ impl CodeEditorApp {
                             };
                             painter.rect_filled(
                                 Rect::from_min_size(Pos2::new(sx, y), Vec2::new(sw.max(cw * 0.5), lh)),
-                                Rounding::ZERO, self.tc.selection_bg,
+                                CornerRadius::ZERO, self.tc.selection_bg,
                             );
                         }
                     }
@@ -758,7 +780,7 @@ impl CodeEditorApp {
                         let mw = m.length as f32 * cw;
                         painter.rect_filled(
                             Rect::from_min_size(Pos2::new(mx - 1.0, y), Vec2::new(mw + 2.0, lh)),
-                            Rounding::same(2),
+                            CornerRadius::same(2),
                             if li == ed.cursor.line && m.col == ed.cursor.col {
                                 self.tc.accent.linear_multiply(0.35)
                             } else {
@@ -773,7 +795,7 @@ impl CodeEditorApp {
                     if li == ml && mc < chars.len() {
                         painter.rect_filled(
                             Rect::from_min_size(Pos2::new(xs + mc as f32 * cw - 1.0, y), Vec2::new(cw + 2.0, lh)),
-                            Rounding::same(2), self.tc.bracket_match_bg,
+                            CornerRadius::same(2), self.tc.bracket_match_bg,
                         );
                     }
                 }
@@ -782,7 +804,7 @@ impl CodeEditorApp {
                     if "()[]{}".contains(ch) && bracket_match.is_some() {
                         painter.rect_filled(
                             Rect::from_min_size(Pos2::new(xs + cursor_col as f32 * cw - 1.0, y), Vec2::new(cw + 2.0, lh)),
-                            Rounding::same(2), self.tc.bracket_match_bg,
+                            CornerRadius::same(2), self.tc.bracket_match_bg,
                         );
                     }
                 }
@@ -841,13 +863,13 @@ impl CodeEditorApp {
             let cursor_row = vis_lines.iter().position(|&l| l == ed.cursor.line);
             if self.app.focus == Focus::Editor {
                 if let Some(row) = cursor_row {
-                    let cy = rect.min.y + row as f32 * lh;
+                    let cy = rect.min.y + row as f32 * lh - pixel_offset;
                     let cx = rect.min.x + gw + ed.cursor.col as f32 * cw;
                     let blink = (ui.input(|i| i.time) * 1000.0) as u64 % (CURSOR_BLINK_INTERVAL_MS * 2) < CURSOR_BLINK_INTERVAL_MS;
                     if blink && cy < rect.max.y {
                         painter.rect_filled(
                             Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(2.0, lh)),
-                            Rounding::ZERO, self.tc.cursor_color,
+                            CornerRadius::ZERO, self.tc.cursor_color,
                         );
                     }
                 }
@@ -865,7 +887,7 @@ impl CodeEditorApp {
                     }
                 }
                 if let Some((_, ref blame_text)) = self.blame_cache {
-                    let cy = rect.min.y + row as f32 * lh;
+                    let cy = rect.min.y + row as f32 * lh - pixel_offset;
                     let line_len = ed.buffer.line_len(cur_line);
                     let blame_x = rect.min.x + gw + (line_len as f32 + 4.0) * cw;
                     painter.text(
@@ -884,16 +906,16 @@ impl CodeEditorApp {
             } else if lc > vis {
                 // Scrollbar (wider, more visible)
                 let sb_h = (vis as f32 / lc as f32 * rect.height()).max(24.0);
-                let sb_y = rect.min.y + (so as f32 / lc as f32 * rect.height());
+                let sb_y = rect.min.y + (ed.scroll_offset / lc as f32 * rect.height());
                 // Track background
                 painter.rect_filled(
                     Rect::from_min_size(Pos2::new(rect.max.x - SCROLLBAR_WIDTH, rect.min.y), Vec2::new(SCROLLBAR_WIDTH, rect.height())),
-                    Rounding::ZERO, if dark { Color32::from_rgba_premultiplied(30, 33, 40, 80) } else { Color32::from_rgba_premultiplied(0, 0, 0, 10) },
+                    CornerRadius::ZERO, if dark { Color32::from_rgba_premultiplied(30, 33, 40, 80) } else { Color32::from_rgba_premultiplied(0, 0, 0, 10) },
                 );
                 // Thumb
                 painter.rect_filled(
                     Rect::from_min_size(Pos2::new(rect.max.x - SCROLLBAR_WIDTH + 2.0, sb_y), Vec2::new(SCROLLBAR_WIDTH - 4.0, sb_h)),
-                    Rounding::same(4), if dark { Color32::from_rgba_premultiplied(150, 160, 180, 100) } else { Color32::from_rgba_premultiplied(0, 0, 0, 60) },
+                    CornerRadius::same(4), if dark { Color32::from_rgba_premultiplied(150, 160, 180, 100) } else { Color32::from_rgba_premultiplied(0, 0, 0, 60) },
                 );
             }
 
@@ -908,12 +930,12 @@ impl CodeEditorApp {
                 if blink {
                     for ec in &ed.extra_cursors {
                         if let Some(row) = vis_lines.iter().position(|&l| l == ec.line) {
-                            let ecy = rect.min.y + row as f32 * lh;
+                            let ecy = rect.min.y + row as f32 * lh - pixel_offset;
                             let ecx = rect.min.x + gw + ec.col as f32 * cw;
                             if ecy < rect.max.y {
                                 painter.rect_filled(
                                     Rect::from_min_size(Pos2::new(ecx, ecy), Vec2::new(2.0, lh)),
-                                    Rounding::ZERO, self.tc.cursor_color,
+                                    CornerRadius::ZERO, self.tc.cursor_color,
                                 );
                             }
                         }
@@ -1019,8 +1041,8 @@ impl CodeEditorApp {
                 // Open Folder card
                 let (r1, resp1) = ui.allocate_exact_size(Vec2::new(half_w, 70.0), egui::Sense::click());
                 let h1 = resp1.hovered();
-                ui.painter().rect_filled(r1, Rounding::same(10), if h1 { card_hover } else { card_bg });
-                ui.painter().rect_stroke(r1, Rounding::same(10), Stroke::new(1.0, card_border), egui::StrokeKind::Outside);
+                ui.painter().rect_filled(r1, CornerRadius::same(10), if h1 { card_hover } else { card_bg });
+                ui.painter().rect_stroke(r1, CornerRadius::same(10), Stroke::new(1.0, card_border), egui::StrokeKind::Outside);
                 ui.painter().text(Pos2::new(r1.min.x + 20.0, r1.min.y + 16.0), egui::Align2::LEFT_TOP,
                     "📂", FontId::monospace(20.0), self.tc.fg);
                 ui.painter().text(Pos2::new(r1.min.x + 50.0, r1.min.y + 16.0), egui::Align2::LEFT_TOP,
@@ -1034,8 +1056,8 @@ impl CodeEditorApp {
                 // Open File card
                 let (r2, resp2) = ui.allocate_exact_size(Vec2::new(half_w, 70.0), egui::Sense::click());
                 let h2 = resp2.hovered();
-                ui.painter().rect_filled(r2, Rounding::same(10), if h2 { card_hover } else { card_bg });
-                ui.painter().rect_stroke(r2, Rounding::same(10), Stroke::new(1.0, card_border), egui::StrokeKind::Outside);
+                ui.painter().rect_filled(r2, CornerRadius::same(10), if h2 { card_hover } else { card_bg });
+                ui.painter().rect_stroke(r2, CornerRadius::same(10), Stroke::new(1.0, card_border), egui::StrokeKind::Outside);
                 ui.painter().text(Pos2::new(r2.min.x + 20.0, r2.min.y + 16.0), egui::Align2::LEFT_TOP,
                     "📄", FontId::monospace(20.0), self.tc.fg);
                 ui.painter().text(Pos2::new(r2.min.x + 50.0, r2.min.y + 16.0), egui::Align2::LEFT_TOP,
@@ -1074,7 +1096,7 @@ impl CodeEditorApp {
                                 RichText::new(&label_text).font(FontId::monospace(12.0)).color(self.tc.fg)
                             )
                             .fill(Color32::TRANSPARENT)
-                            .rounding(Rounding::same(6))
+                            .corner_radius(CornerRadius::same(6))
                             .stroke(Stroke::NONE)
                         );
                         if btn.clicked() {
@@ -1115,8 +1137,8 @@ impl CodeEditorApp {
                             // Key badge
                             let badge_text = RichText::new(key).font(FontId::monospace(10.0)).color(self.tc.fg);
                             let badge_bg = if dark { Color32::from_rgb(55, 58, 65) } else { Color32::from_rgb(230, 232, 236) };
-                            let badge_resp = ui.add(egui::Button::new(badge_text).fill(badge_bg)
-                                .rounding(Rounding::same(4)).stroke(Stroke::new(0.5, card_border))
+                            ui.add(egui::Button::new(badge_text).fill(badge_bg)
+                                .corner_radius(CornerRadius::same(4)).stroke(Stroke::new(0.5, card_border))
                                 .min_size(Vec2::new(90.0, 20.0)));
                             ui.label(RichText::new(desc).font(FontId::monospace(11.0)).color(self.tc.fg_dim));
                         });
@@ -1138,7 +1160,7 @@ impl CodeEditorApp {
                             let badge_text = RichText::new(key).font(FontId::monospace(10.0)).color(self.tc.fg);
                             let badge_bg = if dark { Color32::from_rgb(55, 58, 65) } else { Color32::from_rgb(230, 232, 236) };
                             ui.add(egui::Button::new(badge_text).fill(badge_bg)
-                                .rounding(Rounding::same(4)).stroke(Stroke::new(0.5, card_border))
+                                .corner_radius(CornerRadius::same(4)).stroke(Stroke::new(0.5, card_border))
                                 .min_size(Vec2::new(90.0, 20.0)));
                             ui.label(RichText::new(desc).font(FontId::monospace(11.0)).color(self.tc.fg_dim));
                         });
@@ -1172,7 +1194,7 @@ impl CodeEditorApp {
             let bc_bg = if dark { Color32::from_rgb(32, 33, 40) } else { Color32::from_rgb(240, 240, 242) };
             let bc_h = 26.0;
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), bc_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, Rounding::ZERO, bc_bg);
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, bc_bg);
             let text_y = rect.min.y + (bc_h - 12.0) / 2.0;
             let mut x = rect.min.x + 14.0;
             for (i, part) in parts.iter().enumerate() {
@@ -1215,7 +1237,7 @@ impl CodeEditorApp {
         let minimap_x = rect.max.x - minimap_w;
         let minimap_rect = Rect::from_min_size(Pos2::new(minimap_x, rect.min.y), Vec2::new(minimap_w, rect.height()));
         let minimap_bg = if dark { Color32::from_rgb(30, 30, 30) } else { Color32::from_rgb(240, 240, 240) };
-        painter.rect_filled(minimap_rect, Rounding::ZERO, minimap_bg);
+        painter.rect_filled(minimap_rect, CornerRadius::ZERO, minimap_bg);
         painter.line_segment(
             [Pos2::new(minimap_x, rect.min.y), Pos2::new(minimap_x, rect.max.y)],
             Stroke::new(1.0, self.tc.border),
@@ -1230,7 +1252,11 @@ impl CodeEditorApp {
             0.0
         };
 
-        let step = if lc > 2000 { (lc / 1000).max(1) } else { 1 };
+        // Cap draw calls to ~(viewport_height / mini_line_h) — anything denser is wasted pixels.
+        // For a 800px viewport that's 400 lines max regardless of file size, dropping a 2000-line
+        // file from 2000 to 400 rect_filled calls per frame.
+        let max_draws = ((rect.height() / mini_line_h) as usize).max(50);
+        let step = (lc / max_draws).max(1);
         for li in (0..lc).step_by(step) {
             let my = rect.min.y + li as f32 * mini_line_h - minimap_scroll_offset;
             if my < rect.min.y - 2.0 { continue; }
@@ -1268,7 +1294,7 @@ impl CodeEditorApp {
 
             painter.rect_filled(
                 Rect::from_min_size(Pos2::new(mx, my), Vec2::new(mw, mini_line_h.max(1.0))),
-                Rounding::ZERO, line_color,
+                CornerRadius::ZERO, line_color,
             );
         }
 
@@ -1282,7 +1308,7 @@ impl CodeEditorApp {
         };
         painter.rect_filled(
             Rect::from_min_size(Pos2::new(minimap_x, vp_y), Vec2::new(minimap_w, vp_h)),
-            Rounding::ZERO, vp_color,
+            CornerRadius::ZERO, vp_color,
         );
         let vp_border = if dark {
             Color32::from_rgba_premultiplied(122, 162, 247, 70)
@@ -1315,7 +1341,7 @@ impl CodeEditorApp {
                     let hover_vp_h = vis as f32 * mini_line_h;
                     painter.rect_filled(
                         Rect::from_min_size(Pos2::new(minimap_x, hover_vp_y), Vec2::new(minimap_w, hover_vp_h)),
-                        Rounding::ZERO,
+                        CornerRadius::ZERO,
                         if dark {
                             Color32::from_rgba_premultiplied(255, 255, 255, 10)
                         } else {
@@ -1351,10 +1377,10 @@ impl CodeEditorApp {
 
             painter.rect_filled(
                 ac_rect.translate(Vec2::new(2.0, 2.0)),
-                Rounding::same(4), Color32::from_black_alpha(if dark { 80 } else { 30 }),
+                CornerRadius::same(4), Color32::from_black_alpha(if dark { 80 } else { 30 }),
             );
-            painter.rect_filled(ac_rect, Rounding::same(4), popup_bg);
-            painter.rect_stroke(ac_rect, Rounding::same(4), Stroke::new(1.0, self.tc.border), egui::StrokeKind::Outside);
+            painter.rect_filled(ac_rect, CornerRadius::same(4), popup_bg);
+            painter.rect_stroke(ac_rect, CornerRadius::same(4), Stroke::new(1.0, self.tc.border), egui::StrokeKind::Outside);
 
             for (i, suggestion) in self.app.autocomplete_suggestions.iter().enumerate().take(ac_count) {
                 let item_y = ac_y + 2.0 + i as f32 * ac_item_h;
@@ -1362,7 +1388,7 @@ impl CodeEditorApp {
                 if selected {
                     painter.rect_filled(
                         Rect::from_min_size(Pos2::new(ac_x + 2.0, item_y), Vec2::new(ac_w - 4.0, ac_item_h)),
-                        Rounding::same(3), self.tc.selection_bg,
+                        CornerRadius::same(3), self.tc.selection_bg,
                     );
                 }
                 painter.text(

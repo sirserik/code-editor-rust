@@ -14,7 +14,6 @@ pub struct TerminalManager {
 struct TerminalInstance {
     writer: Box<dyn Write + Send>,
     _master: Box<dyn MasterPty + Send>,
-    alive: Arc<Mutex<bool>>,
 }
 
 /// Simple terminal character grid (Zed uses alacritty_terminal)
@@ -31,8 +30,6 @@ pub struct TerminalGrid {
 #[derive(Clone, Default)]
 pub struct TermCell {
     pub ch: char,
-    pub bold: bool,
-    pub fg_ansi: Option<u8>, // ANSI color index (0-15)
 }
 
 impl TerminalGrid {
@@ -69,8 +66,6 @@ impl TerminalGrid {
                     if self.cursor_col < self.cols && self.cursor_row < self.rows {
                         self.cells[self.cursor_row][self.cursor_col] = TermCell {
                             ch: byte as char,
-                            bold: false,
-                            fg_ansi: None,
                         };
                         self.cursor_col += 1;
                         if self.cursor_col >= self.cols {
@@ -144,8 +139,6 @@ impl TerminalManager {
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
-        let alive = Arc::new(Mutex::new(true));
-        let alive_clone = alive.clone();
         let output_buffer = self.output_buffer.clone();
 
         // Initialize buffer and grid
@@ -177,9 +170,6 @@ impl TerminalManager {
                     Err(_) => break,
                 }
             }
-            if let Ok(mut a) = alive_clone.lock() {
-                *a = false;
-            }
         });
 
         self.terminals.insert(
@@ -187,7 +177,6 @@ impl TerminalManager {
             TerminalInstance {
                 writer,
                 _master: pair.master,
-                alive,
             },
         );
 
@@ -226,21 +215,6 @@ impl TerminalManager {
         }
     }
 
-    pub fn kill(&mut self, id: u32) {
-        self.terminals.remove(&id);
-        self.grids.remove(&id);
-        if let Ok(mut buf) = self.output_buffer.lock() {
-            buf.remove(&id);
-        }
-    }
-
-    pub fn is_alive(&self, id: u32) -> bool {
-        self.terminals
-            .get(&id)
-            .and_then(|t| t.alive.lock().ok())
-            .map(|a| *a)
-            .unwrap_or(false)
-    }
 }
 
 fn detect_shell() -> String {
