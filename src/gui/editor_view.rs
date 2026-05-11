@@ -213,37 +213,37 @@ impl CodeEditorApp {
                 }
             }
 
-            // Update syntax highlight cache — only for visible lines + small margin
+            // Update syntax highlight cache. Syntect is stateful (multi-line strings etc.)
+            // so we parse the whole buffer when invalidated and slice into per-line spans.
+            // Re-parse is triggered on first frame and after edits (`highlight_dirty_from`).
             {
+                let dark = self.app.settings.theme.resolved() != Theme::Light;
                 let ed = &mut self.app.editors[self.app.active_editor];
-                // Detect language only when cache is empty (first frame) or after invalidation.
-                // Re-running on every frame allocated a String per frame for no reason.
-                let lang_changed = ed.highlight_cache_lang.is_empty();
-                if lang_changed {
+                let lc = ed.line_count();
+                let first_load = ed.highlight_cache_lang.is_empty();
+                let edited = ed.highlight_dirty_from.take().is_some();
+                if first_load {
                     let first_line = ed.buffer.get_line(0);
                     let lang = ed.file_path.as_ref()
-                        .map(|p| syntax::detect_language_with_first_line(p, &first_line).to_string())
+                        .map(|p| crate::syntax::detect_language_with_first_line(p, &first_line).to_string())
                         .unwrap_or("text".into());
-                    ed.highlight_cache.clear();
                     ed.highlight_cache_lang = lang;
                 }
-                let lc = ed.line_count();
-                // Ensure cache is right size
-                ed.highlight_cache.resize(lc, Vec::new());
-                // Only highlight visible range + margin (lazy)
-                let scroll_line = ed.scroll_offset as usize;
-                let vis_start = scroll_line.saturating_sub(5);
-                let vis_end = (scroll_line + ed.viewport_height + 10).min(lc);
-                // Highlight visible lines that aren't cached yet (lazy fill on scroll)
-                let cache_lang = ed.highlight_cache_lang.clone();
-                let dirty_from = ed.highlight_dirty_from.take();
-                for li in vis_start..vis_end {
-                    let needs_hl = if let Some(df) = dirty_from { li >= df } else { false }
-                        || lang_changed
-                        || ed.highlight_cache[li].is_empty();
-                    if needs_hl {
-                        let line = ed.buffer.get_line(li);
-                        ed.highlight_cache[li] = syntax::highlight_line(&line, &cache_lang);
+                if first_load || edited || ed.highlight_cache.len() != lc {
+                    let content = ed.buffer.text();
+                    let lang = ed.highlight_cache_lang.clone();
+                    let new_cache = crate::syntect_engine::highlight_buffer(&content, &lang, dark)
+                        .unwrap_or_else(|| {
+                            // Fallback: per-line keyword highlighter for languages syntect
+                            // doesn't bundle (or when its parser bails out).
+                            content.lines()
+                                .map(|line| crate::syntax::highlight_line(line, &lang))
+                                .collect()
+                        });
+                    ed.highlight_cache = new_cache;
+                    // Ensure size always matches line count even if line counts differ.
+                    if ed.highlight_cache.len() != lc {
+                        ed.highlight_cache.resize(lc, Vec::new());
                     }
                 }
             }
@@ -968,13 +968,18 @@ impl CodeEditorApp {
         let len = chars.len();
         let mut colors = vec![self.tc.fg; len];
 
-        // Apply syntax highlight colors
+        // Apply syntax highlight colors — syntect populates override_color from its theme,
+        // the legacy keyword highlighter leaves it None and we fall back to kind.color(dark).
         for hl in hls {
             let start = hl.start.min(len);
             let end = hl.end.min(len);
-            let c = hl.kind.color(dark);
-            for ci in start..end {
-                colors[ci] = c;
+            let c = hl.override_color.unwrap_or_else(|| hl.kind.color(dark));
+            // colors[] is indexed by char position, but spans are byte ranges. Translate.
+            let mut byte = 0usize;
+            for (ci, ch) in chars.iter().enumerate() {
+                if byte >= end { break; }
+                if byte >= start { colors[ci] = c; }
+                byte += ch.len_utf8();
             }
         }
 

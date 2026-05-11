@@ -59,6 +59,9 @@ pub struct HighlightSpan {
     pub start: usize,
     pub end: usize,
     pub kind: HighlightKind,
+    /// If set, use this color directly (from syntect) instead of `kind.color(dark)`.
+    /// `kind` falls back to `Normal` when this is populated.
+    pub override_color: Option<Color32>,
 }
 
 /// Simple regex-based syntax highlighter (no tree-sitter dependency issues)
@@ -457,7 +460,7 @@ fn highlight_html(line: &str, spans: &mut Vec<HighlightSpan>) {
             i += 4;
             while i + 2 < len && !(chars[i] == '-' && chars[i+1] == '-' && chars[i+2] == '>') { i += 1; }
             if i + 2 < len { i += 3; }
-            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Comment });
+            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Comment, override_color: None });
         }
         // Tag
         else if chars[i] == '<' {
@@ -465,13 +468,13 @@ fn highlight_html(line: &str, spans: &mut Vec<HighlightSpan>) {
             let start = i;
             i += 1;
             if i < len && chars[i] == '/' { i += 1; }
-            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Punctuation });
+            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Punctuation, override_color: None });
 
             // Tag name
             let name_start = i;
             while i < len && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '!' || chars[i] == ':') { i += 1; }
             if i > name_start {
-                spans.push(HighlightSpan { start: name_start, end: i, kind: HighlightKind::Tag });
+                spans.push(HighlightSpan { start: name_start, end: i, kind: HighlightKind::Tag, override_color: None });
             }
 
             // Attributes
@@ -484,12 +487,12 @@ fn highlight_html(line: &str, spans: &mut Vec<HighlightSpan>) {
                 let attr_start = i;
                 while i < len && chars[i] != '=' && chars[i] != '>' && chars[i] != '/' && !chars[i].is_whitespace() { i += 1; }
                 if i > attr_start {
-                    spans.push(HighlightSpan { start: attr_start, end: i, kind: HighlightKind::Attribute });
+                    spans.push(HighlightSpan { start: attr_start, end: i, kind: HighlightKind::Attribute, override_color: None });
                 }
 
                 // = sign
                 if i < len && chars[i] == '=' {
-                    spans.push(HighlightSpan { start: i, end: i + 1, kind: HighlightKind::Operator });
+                    spans.push(HighlightSpan { start: i, end: i + 1, kind: HighlightKind::Operator, override_color: None });
                     i += 1;
                 }
 
@@ -500,7 +503,7 @@ fn highlight_html(line: &str, spans: &mut Vec<HighlightSpan>) {
                     i += 1;
                     while i < len && chars[i] != quote { i += 1; }
                     if i < len { i += 1; }
-                    spans.push(HighlightSpan { start: val_start, end: i, kind: HighlightKind::String });
+                    spans.push(HighlightSpan { start: val_start, end: i, kind: HighlightKind::String, override_color: None });
                 }
             }
 
@@ -509,7 +512,7 @@ fn highlight_html(line: &str, spans: &mut Vec<HighlightSpan>) {
                 let close_start = i;
                 if chars[i] == '/' { i += 1; }
                 if i < len && chars[i] == '>' { i += 1; }
-                spans.push(HighlightSpan { start: close_start, end: i, kind: HighlightKind::Punctuation });
+                spans.push(HighlightSpan { start: close_start, end: i, kind: HighlightKind::Punctuation, override_color: None });
             }
         }
         // Entity &..;
@@ -517,7 +520,7 @@ fn highlight_html(line: &str, spans: &mut Vec<HighlightSpan>) {
             let start = i;
             while i < len && chars[i] != ';' { i += 1; }
             if i < len { i += 1; }
-            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Constant });
+            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Constant, override_color: None });
         }
         else {
             i += 1;
@@ -541,7 +544,7 @@ fn highlight_css(line: &str, spans: &mut Vec<HighlightSpan>) {
             if i + 1 < len {
                 i += 2;
             }
-            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Comment });
+            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Comment, override_color: None });
         }
         // Strings
         else if chars[i] == '"' || chars[i] == '\'' {
@@ -553,7 +556,7 @@ fn highlight_css(line: &str, spans: &mut Vec<HighlightSpan>) {
                 i += 1;
             }
             if i < len { i += 1; }
-            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::String });
+            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::String, override_color: None });
         }
         // Numbers
         else if chars[i].is_ascii_digit() || (chars[i] == '#' && i + 1 < len && chars[i+1].is_ascii_hexdigit()) {
@@ -562,7 +565,7 @@ fn highlight_css(line: &str, spans: &mut Vec<HighlightSpan>) {
             while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '.') {
                 i += 1;
             }
-            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Number });
+            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Number, override_color: None });
         }
         // Properties (word before colon)
         else if chars[i].is_alphabetic() || chars[i] == '-' {
@@ -574,9 +577,9 @@ fn highlight_css(line: &str, spans: &mut Vec<HighlightSpan>) {
             let mut j = i;
             while j < len && chars[j].is_whitespace() { j += 1; }
             if j < len && chars[j] == ':' {
-                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Attribute });
+                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Attribute, override_color: None });
             } else {
-                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Normal });
+                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Normal, override_color: None });
             }
         }
         else {
@@ -607,14 +610,14 @@ fn highlight_json(line: &str, spans: &mut Vec<HighlightSpan>) {
             } else {
                 HighlightKind::String
             };
-            spans.push(HighlightSpan { start, end: i, kind });
+            spans.push(HighlightSpan { start, end: i, kind, override_color: None });
         } else if chars[i].is_ascii_digit() || chars[i] == '-' {
             let start = i;
             i += 1;
             while i < len && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == 'e' || chars[i] == 'E' || chars[i] == '+' || chars[i] == '-') {
                 i += 1;
             }
-            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Number });
+            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Number, override_color: None });
         } else {
             let word_start = i;
             if chars[i].is_alphabetic() {
@@ -622,7 +625,7 @@ fn highlight_json(line: &str, spans: &mut Vec<HighlightSpan>) {
                 let word: String = chars[word_start..i].iter().collect();
                 match word.as_str() {
                     "true" | "false" | "null" => {
-                        spans.push(HighlightSpan { start: word_start, end: i, kind: HighlightKind::Keyword });
+                        spans.push(HighlightSpan { start: word_start, end: i, kind: HighlightKind::Keyword, override_color: None });
                     }
                     _ => {}
                 }
@@ -636,11 +639,11 @@ fn highlight_json(line: &str, spans: &mut Vec<HighlightSpan>) {
 fn highlight_toml(line: &str, spans: &mut Vec<HighlightSpan>) {
     let trimmed = line.trim();
     if trimmed.starts_with('#') {
-        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::Comment });
+        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::Comment, override_color: None });
         return;
     }
     if trimmed.starts_with('[') {
-        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::Tag });
+        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::Tag, override_color: None });
         return;
     }
     highlight_generic(line, spans, &[], &["true", "false"], "#", &[("\"", "\""), ("'", "'")]);
@@ -649,14 +652,14 @@ fn highlight_toml(line: &str, spans: &mut Vec<HighlightSpan>) {
 fn highlight_yaml(line: &str, spans: &mut Vec<HighlightSpan>) {
     let trimmed = line.trim();
     if trimmed.starts_with('#') {
-        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::Comment });
+        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::Comment, override_color: None });
         return;
     }
     // Keys before colon
     if let Some(colon_pos) = line.find(':') {
         let key_part = &line[..colon_pos];
         if !key_part.trim().is_empty() && !key_part.trim().starts_with('-') {
-            spans.push(HighlightSpan { start: 0, end: colon_pos, kind: HighlightKind::Attribute });
+            spans.push(HighlightSpan { start: 0, end: colon_pos, kind: HighlightKind::Attribute, override_color: None });
         }
     }
     highlight_generic(line, spans, &[], &["true", "false", "null", "yes", "no"], "#", &[("\"", "\""), ("'", "'")]);
@@ -718,13 +721,13 @@ fn highlight_sql(line: &str, spans: &mut Vec<HighlightSpan>) {
 fn highlight_markdown(line: &str, spans: &mut Vec<HighlightSpan>) {
     let trimmed = line.trim();
     if trimmed.starts_with('#') {
-        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::Keyword });
+        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::Keyword, override_color: None });
     } else if trimmed.starts_with("```") {
-        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::Comment });
+        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::Comment, override_color: None });
     } else if trimmed.starts_with('>') {
-        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::String });
+        spans.push(HighlightSpan { start: 0, end: line.len(), kind: HighlightKind::String, override_color: None });
     } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("1.") {
-        spans.push(HighlightSpan { start: 0, end: 2.min(line.len()), kind: HighlightKind::Keyword });
+        spans.push(HighlightSpan { start: 0, end: 2.min(line.len()), kind: HighlightKind::Keyword, override_color: None });
     }
 }
 
@@ -751,6 +754,7 @@ fn highlight_generic(
                 start: i,
                 end: len,
                 kind: HighlightKind::Comment,
+                override_color: None,
             });
             return;
         }
@@ -765,7 +769,7 @@ fn highlight_generic(
             if i + 1 < len {
                 i += 2;
             }
-            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Comment });
+            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Comment, override_color: None });
             continue;
         }
 
@@ -786,7 +790,7 @@ fn highlight_generic(
                     }
                     i += 1;
                 }
-                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::String });
+                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::String, override_color: None });
                 found_string = true;
                 break;
             }
@@ -802,7 +806,7 @@ fn highlight_generic(
             while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_') {
                 i += 1;
             }
-            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Number });
+            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Number, override_color: None });
             continue;
         }
 
@@ -815,13 +819,13 @@ fn highlight_generic(
             let word: String = chars[start..i].iter().collect();
 
             if keywords.contains(&word.as_str()) {
-                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Keyword });
+                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Keyword, override_color: None });
             } else if types.contains(&word.as_str()) {
-                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Type });
+                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Type, override_color: None });
             } else if i < len && chars[i] == '(' {
-                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Function });
+                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Function, override_color: None });
             } else if word.chars().next().map_or(false, |c| c.is_uppercase()) {
-                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Type });
+                spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Type, override_color: None });
             }
             continue;
         }
@@ -833,13 +837,13 @@ fn highlight_generic(
             while i < len && "+-*/%=<>!&|^~?".contains(chars[i]) {
                 i += 1;
             }
-            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Operator });
+            spans.push(HighlightSpan { start, end: i, kind: HighlightKind::Operator, override_color: None });
             continue;
         }
 
         // Punctuation
         if "{}[]();:,.@#$".contains(chars[i]) {
-            spans.push(HighlightSpan { start: i, end: i + 1, kind: HighlightKind::Punctuation });
+            spans.push(HighlightSpan { start: i, end: i + 1, kind: HighlightKind::Punctuation, override_color: None });
             i += 1;
             continue;
         }

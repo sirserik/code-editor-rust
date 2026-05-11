@@ -7,6 +7,7 @@ mod search;
 mod settings;
 mod snippets;
 mod syntax;
+mod syntect_engine;
 mod templates;
 mod terminal;
 
