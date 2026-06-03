@@ -3,6 +3,7 @@ mod editor;
 mod file_tree;
 mod git;
 mod gui;
+mod output;
 mod search;
 mod settings;
 mod snippets;
@@ -10,10 +11,15 @@ mod syntax;
 mod syntect_engine;
 mod templates;
 mod terminal;
+mod wrap;
 
 use app::App;
 
 fn main() -> eframe::Result<()> {
+    // Warm syntect's grammar + theme sets on a background thread so the first
+    // file open doesn't pay the ~100-200ms one-time load on the UI thread.
+    std::thread::spawn(syntect_engine::prewarm);
+
     let mut app = App::new();
 
     // Parse CLI args
@@ -41,12 +47,20 @@ fn main() -> eframe::Result<()> {
         height: 256,
     };
 
+    // Frameless-style macOS window: content extends under the title bar so our
+    // dark theme fills the whole window. The traffic-light buttons stay visible
+    // (we just hide the system title text — we render our own). On macOS this
+    // requires `with_fullsize_content_view(true)` + `with_title_shown(false)`.
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1200.0, 800.0])
+        .with_min_inner_size([600.0, 400.0])
+        .with_title("Ferrite")
+        .with_icon(icon)
+        .with_fullsize_content_view(true)
+        .with_title_shown(false)
+        .with_titlebar_buttons_shown(true);
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_min_inner_size([600.0, 400.0])
-            .with_title("Code Editor")
-            .with_icon(icon),
+        viewport,
         renderer: eframe::Renderer::Wgpu,
         vsync: true,
         ..Default::default()

@@ -22,6 +22,10 @@ pub struct Editor {
     pub file_path: Option<String>,
     pub is_dirty: bool,
     pub viewport_height: usize,
+    /// Soft-wrap width in columns, pushed in by the renderer each frame so that
+    /// scrolling and cursor-visibility can reason in visual rows. `usize::MAX`
+    /// means wrapping is off (every logical line is exactly one visual row).
+    pub wrap_cols: usize,
     pub selection: Option<Selection>,
     // Undo/Redo: store snapshots
     undo_stack: Vec<(String, usize, usize)>, // (content, cursor_line, cursor_col)
@@ -45,7 +49,49 @@ pub struct Editor {
     // Cached syntax highlights per line (Scintilla-style)
     pub highlight_cache: Vec<Vec<crate::syntax::HighlightSpan>>,
     pub highlight_cache_lang: String,
+    /// Dark/light mode the highlight cache was built under. Syntect bakes
+    /// absolute RGB into each span, so a theme switch must rebuild the cache —
+    /// otherwise dark colors get painted on the light background (unreadable).
+    pub highlight_cache_dark: Option<bool>,
     pub highlight_dirty_from: Option<usize>, // re-highlight from this line
+    // Async analysis: the whole-buffer syntect pass + fold scan run on a worker
+    // thread so opening/editing a file never blocks the UI. `highlight_gen` is
+    // bumped whenever a re-analysis is needed; the worker tags its result with the
+    // gen it ran for, and a stale result (older gen) is discarded. Coalesces bursts.
+    // Payload: (gen, per-line highlight spans, fold-start→fold-end ranges).
+    #[allow(clippy::type_complexity)]
+    pub highlight_rx: Option<std::sync::mpsc::Receiver<(u64, Vec<Vec<crate::syntax::HighlightSpan>>, HashMap<usize, usize>)>>,
+    pub highlight_gen: u64,
+    pub highlight_applied_gen: u64,
+}
+
+/// Compute brace/bracket fold ranges from raw text. Pure (no `&self`) so it can
+/// run on a worker thread. Returns a map of fold-start line → fold-end line.
+pub fn compute_folds(content: &str) -> HashMap<usize, usize> {
+    let mut ranges = HashMap::new();
+    let mut stack: Vec<usize> = Vec::new(); // lines where an opener appeared
+    for (li, line) in content.lines().enumerate() {
+        let mut in_string = false;
+        let mut prev = '\0';
+        for ch in line.chars() {
+            if (ch == '"' || ch == '\'') && prev != '\\' {
+                in_string = !in_string;
+            }
+            if !in_string {
+                if ch == '{' || ch == '(' || ch == '[' {
+                    stack.push(li);
+                } else if ch == '}' || ch == ')' || ch == ']' {
+                    if let Some(start) = stack.pop() {
+                        if li > start {
+                            ranges.insert(start, li);
+                        }
+                    }
+                }
+            }
+            prev = ch;
+        }
+    }
+    ranges
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +111,7 @@ impl Editor {
             file_path: None,
             is_dirty: false,
             viewport_height: 24,
+            wrap_cols: usize::MAX,
             selection: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -80,13 +127,19 @@ impl Editor {
             extra_cursors: Vec::new(),
             highlight_cache: Vec::new(),
             highlight_cache_lang: String::new(),
+            highlight_cache_dark: None,
             highlight_dirty_from: Some(0),
+            highlight_rx: None,
+            highlight_gen: 0,
+            highlight_applied_gen: 0,
         }
     }
 
     pub fn from_file(path: &str) -> std::io::Result<Self> {
-        let buffer = Buffer::from_file(path)?;
-        let initial_content = buffer.text();
+        // Read once and reuse the string for the rope, the undo baseline, and the
+        // git-diff baseline — avoids rebuilding the whole file text from the rope.
+        let initial_content = std::fs::read_to_string(path)?;
+        let buffer = Buffer { rope: ropey::Rope::from_str(&initial_content) };
         Ok(Self {
             buffer,
             cursor: Cursor::new(),
@@ -94,6 +147,7 @@ impl Editor {
             file_path: Some(path.to_string()),
             is_dirty: false,
             viewport_height: 24,
+            wrap_cols: usize::MAX,
             selection: None,
             undo_stack: vec![(initial_content.clone(), 0, 0)],
             redo_stack: Vec::new(),
@@ -109,7 +163,11 @@ impl Editor {
             extra_cursors: Vec::new(),
             highlight_cache: Vec::new(),
             highlight_cache_lang: String::new(),
+            highlight_cache_dark: None,
             highlight_dirty_from: Some(0),
+            highlight_rx: None,
+            highlight_gen: 0,
+            highlight_applied_gen: 0,
         })
     }
 
@@ -384,26 +442,79 @@ impl Editor {
         self.cursor.col = 0;
     }
 
+    /// Visual rows a logical line occupies under the active wrap width (≥ 1).
+    pub fn line_visual_rows(&self, line: usize) -> usize {
+        if self.wrap_cols == usize::MAX {
+            return 1;
+        }
+        let chars: Vec<char> = self.buffer.get_line(line).chars().take(crate::wrap::MAX_LINE_LEN).collect();
+        let mut scratch = Vec::new();
+        crate::wrap::visual_rows(&chars, self.wrap_cols, &mut scratch)
+    }
+
+    /// Which visual row (0-based) the cursor column sits on within its line.
+    fn cursor_visual_row(&self, line: usize, col: usize) -> usize {
+        if self.wrap_cols == usize::MAX {
+            return 0;
+        }
+        let chars: Vec<char> = self.buffer.get_line(line).chars().take(crate::wrap::MAX_LINE_LEN).collect();
+        let mut scratch = Vec::new();
+        crate::wrap::visual_row_of_col(&chars, self.wrap_cols, col, &mut scratch)
+    }
+
     pub fn page_up(&mut self) {
-        let jump = self.viewport_height.saturating_sub(2);
-        self.cursor.line = self.cursor.line.saturating_sub(jump);
+        // Move the cursor up by roughly one viewport, measured in visual rows so
+        // a screenful of wrapped text equals a screenful of logical lines.
+        let mut budget = self.viewport_height.saturating_sub(2);
+        while budget > 0 && self.cursor.line > 0 {
+            self.cursor.line -= 1;
+            budget = budget.saturating_sub(self.line_visual_rows(self.cursor.line));
+        }
         self.clamp_cursor();
     }
 
     pub fn page_down(&mut self) {
-        let jump = self.viewport_height.saturating_sub(2);
-        self.cursor.line = (self.cursor.line + jump).min(self.buffer.line_count().saturating_sub(1));
+        let last = self.buffer.line_count().saturating_sub(1);
+        let mut budget = self.viewport_height.saturating_sub(2);
+        while budget > 0 && self.cursor.line < last {
+            budget = budget.saturating_sub(self.line_visual_rows(self.cursor.line));
+            self.cursor.line += 1;
+        }
+        self.cursor.line = self.cursor.line.min(last);
         self.clamp_cursor();
     }
 
     pub fn scroll_into_view(&mut self) {
-        let margin = 3.min(self.viewport_height / 3);
-        let so = self.scroll_offset as usize;
+        let vp_rows = self.viewport_height.max(1);
+        let margin = 3.min(vp_rows / 3);
+        let so = self.scroll_offset.floor().max(0.0) as usize;
+
+        // Scroll up: cursor's logical line is above the top margin.
         if self.cursor.line < so + margin {
             self.scroll_offset = self.cursor.line.saturating_sub(margin) as f32;
+            return;
         }
-        if self.cursor.line + margin >= so + self.viewport_height {
-            self.scroll_offset = ((self.cursor.line + margin).saturating_sub(self.viewport_height) + 1) as f32;
+
+        // Scroll down: count visual rows from the top of the viewport to the
+        // cursor's row; if it falls past the bottom margin, pull the top line
+        // forward until the cursor (plus margin) fits.
+        if self.cursor.line >= so {
+            let mut rows = self.cursor_visual_row(self.cursor.line, self.cursor.col);
+            for l in so..self.cursor.line {
+                rows += self.line_visual_rows(l);
+            }
+            if rows + margin >= vp_rows {
+                // Walk the top line downward, dropping its visual rows, until the
+                // cursor's row sits within the viewport (leaving the margin).
+                let target = rows + margin + 1 - vp_rows; // visual rows to drop off the top
+                let mut dropped = 0;
+                let mut top = so;
+                while top < self.cursor.line && dropped < target {
+                    dropped += self.line_visual_rows(top);
+                    top += 1;
+                }
+                self.scroll_offset = top as f32;
+            }
         }
     }
 
@@ -597,8 +708,9 @@ impl Editor {
             }
         }
         if self.undo_stack.len() > 1 {
-            let popped = self.undo_stack.pop().unwrap();
-            self.redo_stack.push(popped);
+            if let Some(popped) = self.undo_stack.pop() {
+                self.redo_stack.push(popped);
+            }
             if let Some((content, line, col)) = self.undo_stack.last().cloned() {
                 self.buffer.rope = ropey::Rope::from_str(&content);
                 self.cursor.line = line.min(self.buffer.line_count().saturating_sub(1));
@@ -774,34 +886,12 @@ impl Editor {
     }
 
     /// Compute fold ranges by matching { } brackets across lines
+    /// Recompute fold ranges synchronously (tests / one-off callers). The editor
+    /// normally gets folds from the async analysis worker; see `compute_folds`.
+    #[cfg(test)]
     pub fn compute_fold_ranges(&mut self) {
-        self.fold_ranges.clear();
+        self.fold_ranges = compute_folds(&self.buffer.text());
         self.fold_ranges_computed = true;
-        let lc = self.buffer.line_count();
-        let mut stack: Vec<usize> = Vec::new(); // stack of line numbers where '{' opened
-
-        for li in 0..lc {
-            let line = self.buffer.get_line(li);
-            let mut in_string = false;
-            let mut prev = '\0';
-            for ch in line.chars() {
-                if (ch == '"' || ch == '\'') && prev != '\\' {
-                    in_string = !in_string;
-                }
-                if !in_string {
-                    if ch == '{' || ch == '(' || ch == '[' {
-                        stack.push(li);
-                    } else if ch == '}' || ch == ')' || ch == ']' {
-                        if let Some(start) = stack.pop() {
-                            if li > start {
-                                self.fold_ranges.insert(start, li);
-                            }
-                        }
-                    }
-                }
-                prev = ch;
-            }
-        }
     }
 
     /// Toggle fold at a given line
@@ -1043,6 +1133,33 @@ mod tests {
         let mut ed = editor_with_text(&"line\n".repeat(50));
         ed.go_to_line(25);
         assert_eq!(ed.cursor.line, 24); // 0-indexed
+    }
+
+    #[test]
+    fn visual_rows_respects_wrap() {
+        let mut ed = editor_with_text(&"x".repeat(25));
+        assert_eq!(ed.line_visual_rows(0), 1); // wrap off by default
+        ed.wrap_cols = 10;
+        assert_eq!(ed.line_visual_rows(0), 3); // 25 chars / 10 cols → 3 rows
+        assert_eq!(ed.cursor_visual_row(0, 0), 0);
+        assert_eq!(ed.cursor_visual_row(0, 15), 1);
+        assert_eq!(ed.cursor_visual_row(0, 24), 2);
+    }
+
+    #[test]
+    fn scroll_into_view_counts_wrapped_rows() {
+        // 10 logical lines, each wrapping into 3 visual rows = 30 visual rows.
+        let mut ed = editor_with_text(&format!("{}\n", "x".repeat(25)).repeat(10));
+        ed.viewport_height = 10; // 10 visual rows fit
+        ed.wrap_cols = 10;       // each line is 3 rows tall
+        ed.scroll_offset = 0.0;
+        // Cursor on logical line 5 — only ~3 wrapped lines fit, so line 5 is well
+        // below the fold and the view must scroll down (top line advances).
+        ed.cursor.line = 5;
+        ed.cursor.col = 0;
+        ed.scroll_into_view();
+        assert!(ed.scroll_offset.floor() as usize > 0, "expected scroll past the top");
+        assert!((ed.scroll_offset.floor() as usize) <= 5);
     }
 
     // ── Selection tests (Zed-style) ──

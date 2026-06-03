@@ -2,6 +2,7 @@ mod keys;
 mod menubar;
 mod sidebar;
 mod editor_view;
+mod icons;
 mod overlays;
 mod terminal_view;
 
@@ -21,14 +22,19 @@ pub struct CodeEditorApp {
     dirty: bool,
     last_input_time: std::time::Instant,
     last_frame_time: std::time::Instant,
-    // Cached git blame
+    // Cached git blame. The blame itself (libgit2 blames the whole file — slow)
+    // runs on a worker thread; `blame_rx` (Some = in flight) carries the result.
     blame_cache: Option<(usize, String)>, // (line, blame_text)
     blame_cache_line: usize,
+    blame_rx: Option<std::sync::mpsc::Receiver<(usize, Option<String>)>>,
     // Perf HUD — rolling frame times
     pub(crate) frame_times_ms: std::collections::VecDeque<f32>,
     pub(crate) section_times_ms: [f32; 5], // [menubar, tabs, status, sidebar, editor]
     // Cache last applied zoom factor so we don't invalidate egui's glyph cache every frame
     last_zoom: f32,
+    // Cached title-strip text — recomputed only when project root or branch changes.
+    cached_title: String,
+    cached_title_key: (Option<String>, Option<String>),
 }
 
 pub(crate) const DEFAULT_FONT_SIZE: f32 = 14.0;
@@ -132,9 +138,12 @@ impl CodeEditorApp {
             last_frame_time: now,
             blame_cache: None,
             blame_cache_line: usize::MAX,
+            blame_rx: None,
             frame_times_ms: std::collections::VecDeque::with_capacity(60),
             section_times_ms: [0.0; 5],
             last_zoom: 0.0,
+            cached_title: String::new(),
+            cached_title_key: (None, None),
         }
     }
 }
@@ -182,15 +191,43 @@ impl eframe::App for CodeEditorApp {
         }
 
         // ── Window title (only when changed) ──
+        // Format: `<project> — <branch> · <path>`  e.g. "ferrite — main · ~/dev/ferrite"
+        // Falls back to filename if no project is open.
         {
-            let ed = &self.app.editors[self.app.active_editor];
-            let name = ed.file_name();
-            let dirty_mark = if ed.is_dirty { " ●" } else { "" };
-            let project = self.app.file_tree.root_path.as_ref()
+            let project = self
+                .app
+                .file_tree
+                .root_path
+                .as_ref()
                 .and_then(|p| std::path::Path::new(p).file_name())
-                .map(|n| format!(" — {}", n.to_string_lossy()))
-                .unwrap_or_default();
-            let title = format!("{}{}{} — Code Editor", name, dirty_mark, project);
+                .map(|n| n.to_string_lossy().to_string());
+            let branch = self
+                .app
+                .git_status
+                .as_ref()
+                .filter(|g| g.is_repo)
+                .map(|g| g.branch.clone());
+            let path_display = self.app.file_tree.root_path.as_ref().map(|p| {
+                // Replace $HOME prefix with "~" for readability
+                let home = dirs::home_dir()
+                    .map(|h| h.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !home.is_empty() && p.starts_with(&home) {
+                    format!("~{}", &p[home.len()..])
+                } else {
+                    p.clone()
+                }
+            });
+            let title = match (project, branch, path_display) {
+                (Some(proj), Some(br), Some(path)) => format!("{} — {} · {}", proj, br, path),
+                (Some(proj), None, Some(path)) => format!("{} · {}", proj, path),
+                (Some(proj), _, None) => proj,
+                _ => {
+                    let ed = &self.app.editors[self.app.active_editor];
+                    let dirty = if ed.is_dirty { " ●" } else { "" };
+                    format!("{}{} — Code Editor", ed.file_name(), dirty)
+                }
+            };
             if title != self.last_title {
                 self.last_title = title.clone();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
@@ -199,6 +236,7 @@ impl eframe::App for CodeEditorApp {
 
         // ── Render UI ──
         self.handle_keys(ctx);
+        self.render_title_strip(ctx);
         let t0 = std::time::Instant::now();
         self.render_menu_bar(ctx);
         let mb_ms = t0.elapsed().as_secs_f32() * 1000.0;
@@ -208,7 +246,7 @@ impl eframe::App for CodeEditorApp {
         let t2 = std::time::Instant::now();
         self.render_status(ctx);
         let status_ms = t2.elapsed().as_secs_f32() * 1000.0;
-        if self.app.show_terminal { self.render_terminal(ctx); }
+        if self.app.show_bottom_panel { self.render_bottom_panel(ctx); }
         let t3 = std::time::Instant::now();
         self.render_activity_bar(ctx);
         if self.app.show_sidebar { self.render_sidebar(ctx); }
@@ -309,15 +347,27 @@ impl eframe::App for CodeEditorApp {
             || self.app.last_search_trigger.is_some()
             || self.drag_source.is_some();
 
-        if has_pending_async {
-            // Async work pending — poll at 10fps
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        if self.dirty {
+            // Something changed this frame — most importantly a deferred
+            // `pending_action` (executed AFTER the panels render) or an async
+            // result that arrived while otherwise idle. Its effect isn't on
+            // screen yet, so draw the follow-up frame immediately. Cleared so we
+            // don't spin once everything has settled.
+            self.dirty = false;
+            ctx.request_repaint();
         } else if idle_since.as_millis() < 1000 {
-            // Recently active — sustain cursor blink (Zed: sustain_duration = 1s)
-            ctx.request_repaint_after(std::time::Duration::from_millis(CURSOR_BLINK_INTERVAL_MS));
+            // Sustain full-speed repaint for ~1s after any input. winit on macOS
+            // coalesces/delays pointer events when the run loop is allowed to
+            // sleep, so a 500ms blink cadence made mouse hover→press→release→click
+            // feel laggy. Running at frame rate for a 1s tail keeps clicks (and
+            // the cursor blink) snappy; continued input keeps resetting the tail.
+            ctx.request_repaint();
+        } else if has_pending_async {
+            // Idle but background work is in flight — poll at 10fps.
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
-        // After 1s idle: NO repaint requested. egui sleeps until next user input.
-        // This is the key to 0% CPU at idle — exactly like Zed.
+        // After 1s idle with nothing dirty/pending: NO repaint requested. egui
+        // sleeps until the next user input — the key to ~0% CPU at idle, like Zed.
     }
 }
 

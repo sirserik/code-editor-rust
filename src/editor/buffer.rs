@@ -13,13 +13,6 @@ impl Buffer {
         }
     }
 
-    pub fn from_file(path: &str) -> std::io::Result<Self> {
-        let content = fs::read_to_string(path)?;
-        Ok(Self {
-            rope: Rope::from_str(&content),
-        })
-    }
-
     pub fn save(&self, path: &str) -> std::io::Result<()> {
         let content = self.rope.to_string();
         fs::write(path, content)

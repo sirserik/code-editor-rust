@@ -1,6 +1,112 @@
 use super::*;
 
 impl CodeEditorApp {
+    /// Thin strip above the menu bar that reserves space for the macOS traffic-light
+    /// buttons (which float over our content thanks to `fullsize_content_view`) and
+    /// shows the project/branch title centered, like the Ferrite mockup.
+    pub(super) fn render_title_strip(&mut self, ctx: &egui::Context) {
+        let tc = self.tc;
+        // Recompute title only on project/branch change — formatting it every frame
+        // burned a string allocation on the render thread for nothing.
+        let project_root = self.app.file_tree.root_path.clone();
+        let branch = self
+            .app
+            .git_status
+            .as_ref()
+            .filter(|g| g.is_repo)
+            .map(|g| g.branch.clone());
+        let key = (project_root.clone(), branch.clone());
+        if key != self.cached_title_key {
+            let project_name = project_root
+                .as_ref()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .map(|n| n.to_string_lossy().to_string());
+            let path_display = project_root.as_ref().map(|p| {
+                let home = dirs::home_dir()
+                    .map(|h| h.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !home.is_empty() && p.starts_with(&home) {
+                    format!("~{}", &p[home.len()..])
+                } else {
+                    p.clone()
+                }
+            });
+            self.cached_title = match (project_name, branch, path_display) {
+                (Some(p), Some(b), Some(path)) => format!("{} — {} · {}", p, b, path),
+                (Some(p), None, Some(path)) => format!("{} · {}", p, path),
+                (Some(p), _, None) => p,
+                _ => "Ferrite".to_string(),
+            };
+            self.cached_title_key = key;
+        }
+        egui::TopBottomPanel::top("title_strip")
+            .exact_height(32.0)
+            .frame(egui::Frame::NONE.fill(tc.tab_bar_bg).inner_margin(0.0))
+            .show(ctx, |ui| {
+                let rect = ui.max_rect();
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &self.cached_title,
+                    FontId::monospace(12.5),
+                    tc.fg,
+                );
+
+                // Right-side icon row: search · run · theme. Mirrors the Ferrite mockup.
+                let btn_size = 22.0;
+                let pad = 14.0;
+                let mut x = rect.max.x - pad;
+                let actions: &[(fn(&egui::Painter, Rect, Color32), &str, u8)] = &[
+                    (super::icons::sun,    "Toggle theme",      0),
+                    (super::icons::bolt,   "Run last command",  1),
+                    (super::icons::search, "Find in Project",   2),
+                ];
+                for (draw, tip, action) in actions {
+                    let icon_rect = Rect::from_min_size(
+                        Pos2::new(x - btn_size, rect.center().y - btn_size * 0.5),
+                        Vec2::splat(btn_size),
+                    );
+                    let resp = ui.interact(
+                        icon_rect,
+                        egui::Id::new(("title_strip_btn", *action)),
+                        egui::Sense::click(),
+                    );
+                    let resp = resp.on_hover_text(*tip);
+                    if resp.hovered() {
+                        ui.painter().rect_filled(
+                            icon_rect,
+                            CornerRadius::same(4),
+                            Color32::from_rgba_unmultiplied(255, 255, 255, 14),
+                        );
+                    }
+                    let inner = Rect::from_center_size(icon_rect.center(), Vec2::splat(14.0));
+                    let color = if resp.hovered() { tc.fg } else { tc.fg_dim };
+                    draw(ui.painter(), inner, color);
+                    if resp.clicked() {
+                        match action {
+                            0 => {
+                                let themes = Theme::ALL;
+                                let idx = themes
+                                    .iter()
+                                    .position(|t| *t == self.app.settings.theme)
+                                    .unwrap_or(0);
+                                self.app.settings.theme = themes[(idx + 1) % themes.len()];
+                                self.app.settings.save();
+                            }
+                            1 => self.app.run_last(),
+                            2 => {
+                                self.app.focus = Focus::GlobalSearch;
+                                self.app.sidebar_tab = SidebarTab::Search;
+                                self.app.show_sidebar = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    x -= btn_size + 6.0;
+                }
+            });
+    }
+
     pub(super) fn render_menu_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("menubar")
             .exact_height(26.0)
@@ -54,6 +160,27 @@ impl CodeEditorApp {
                         if ui.button("Go to Line        ⌘G").clicked() {
                             self.app.focus = Focus::GoToLine;
                             self.app.goto_input.clear();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.menu_button(RichText::new("Selection").font(small()).color(self.tc.fg), |ui| {
+                        if ui.button("Select All           ⌘A").clicked() {
+                            self.app.active_editor_mut().select_all();
+                            ui.close_menu();
+                        }
+                        if ui.button("Select Line          ⌘L").clicked() {
+                            self.app.active_editor_mut().select_line();
+                            ui.close_menu();
+                        }
+                        if ui.button("Select Word at Cursor").clicked() {
+                            self.app.active_editor_mut().select_word_at_cursor();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("Expand Selection     ⌘D").clicked() {
+                            // ⌘D — already wired in keys.rs as "select next occurrence".
+                            // Trigger by selecting word at cursor.
+                            self.app.active_editor_mut().select_word_at_cursor();
                             ui.close_menu();
                         }
                     });
@@ -120,6 +247,75 @@ impl CodeEditorApp {
                             ui.close_menu();
                         }
                     });
+                    ui.menu_button(RichText::new("Go").font(small()).color(self.tc.fg), |ui| {
+                        if ui.button("Go to File…          ⌘P").clicked() {
+                            self.app.focus = Focus::QuickOpen;
+                            self.app.quick_open_input.clear();
+                            self.app.quick_open_results.clear();
+                            ui.close_menu();
+                        }
+                        if ui.button("Go to Line…          ⌘G").clicked() {
+                            self.app.focus = Focus::GoToLine;
+                            self.app.goto_input.clear();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("Top of File          ⌘↑").clicked() {
+                            self.app.active_editor_mut().move_to_top();
+                            ui.close_menu();
+                        }
+                        if ui.button("Bottom of File       ⌘↓").clicked() {
+                            self.app.active_editor_mut().move_to_bottom();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        let n = self.app.editors.len();
+                        if ui.add_enabled(n > 1, egui::Button::new("Next Tab           ⌃⇥")).clicked() {
+                            self.app.active_editor = (self.app.active_editor + 1) % n;
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(n > 1, egui::Button::new("Previous Tab     ⌃⇧⇥")).clicked() {
+                            self.app.active_editor = if self.app.active_editor == 0 { n - 1 } else { self.app.active_editor - 1 };
+                            ui.close_menu();
+                        }
+                    });
+                    ui.menu_button(RichText::new("Run").font(small()).color(self.tc.fg), |ui| {
+                        let has_project = self.app.file_tree.root_path.is_some();
+                        let running = self.app.output.is_running();
+                        if ui.add_enabled(has_project, egui::Button::new("Run Build           ⌘R")).clicked() {
+                            self.app.run_build();
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(has_project, egui::Button::new("Run Tests          ⇧⌘R")).clicked() {
+                            self.app.run_tests();
+                            ui.close_menu();
+                        }
+                        let can_rerun = self.app.output.last_command.is_some();
+                        if ui.add_enabled(can_rerun, egui::Button::new("Re-run Last Command")).clicked() {
+                            self.app.run_last();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("Run Custom Command…").clicked() {
+                            self.app.run_command_input.clear();
+                            self.app.focus = Focus::RunCommandDialog;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.add_enabled(running, egui::Button::new("Stop Running        ⌘.")).clicked() {
+                            self.app.output.stop();
+                            ui.close_menu();
+                        }
+                        if ui.button("Clear Output").clicked() {
+                            self.app.output.clear();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("Show Output Panel  ⇧⌘U").clicked() {
+                            self.app.execute_palette_action(PaletteAction::ToggleOutput);
+                            ui.close_menu();
+                        }
+                    });
                     ui.menu_button(RichText::new("Help").font(small()).color(self.tc.fg), |ui| {
                         if ui.button("Keyboard Shortcuts").clicked() {
                             self.app.focus = Focus::About;
@@ -167,15 +363,24 @@ impl CodeEditorApp {
                         let active = i == self.app.active_editor;
                         let text_c = if active { self.tc.fg } else { self.tc.fg_dim };
                         let bg = if active { self.tc.bg } else { Color32::TRANSPARENT };
-                        let rounding = CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+                        let rounding = CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 };
 
                         let frame = egui::Frame::NONE.fill(bg).corner_radius(rounding)
                             .inner_margin(egui::Margin { left: 10, right: 4, top: 4, bottom: 4 });
 
+                        // File-type dot color (matches the file-tree icon scheme).
+                        let icon_color = file_icon_color(&name, dark);
+
                         let frame_resp = frame.show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
+                                ui.spacing_mut().item_spacing.x = 6.0;
                                 let mut job = egui::text::LayoutJob::default();
+                                let dot_fmt = egui::text::TextFormat {
+                                    font_id: small(),
+                                    color: icon_color,
+                                    ..Default::default()
+                                };
+                                job.append("●  ", 0.0, dot_fmt);
                                 let name_fmt = egui::text::TextFormat {
                                     font_id: small(),
                                     color: text_c,
@@ -183,12 +388,12 @@ impl CodeEditorApp {
                                 };
                                 job.append(&name, 0.0, name_fmt);
                                 if dirty {
-                                    let dot_fmt = egui::text::TextFormat {
+                                    let dirty_fmt = egui::text::TextFormat {
                                         font_id: small(),
                                         color: self.tc.orange,
                                         ..Default::default()
                                     };
-                                    job.append(" ●", 0.0, dot_fmt);
+                                    job.append(" ●", 0.0, dirty_fmt);
                                 }
                                 let label_resp = ui.add(
                                     egui::Label::new(job).sense(egui::Sense::click())

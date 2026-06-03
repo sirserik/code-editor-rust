@@ -3,7 +3,7 @@ use super::*;
 impl CodeEditorApp {
     pub(super) fn render_sidebar(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("sidebar")
-            .default_width(240.0).min_width(150.0).max_width(400.0)
+            .default_width(280.0).min_width(180.0).max_width(440.0)
             .frame(egui::Frame::NONE.fill(self.tc.sidebar_bg).inner_margin(0.0))
             .show(ctx, |ui| {
                 let r = ui.max_rect();
@@ -12,16 +12,41 @@ impl CodeEditorApp {
                     Stroke::new(1.0, self.tc.border),
                 );
 
-                // Tool window header — shows the active tab name (JetBrains style)
-                ui.add_space(6.0);
+                // Tool-window header: tab label on the left, action icons on the right.
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.add_space(12.0);
+                    ui.add_space(14.0);
                     let title = match self.app.sidebar_tab {
-                        SidebarTab::Files => "Project",
-                        SidebarTab::Git => "Git",
-                        SidebarTab::Search => "Find",
+                        SidebarTab::Files => "EXPLORER",
+                        SidebarTab::Git => "GIT",
+                        SidebarTab::Search => "FIND",
                     };
-                    ui.label(RichText::new(title).font(FontId::monospace(11.0)).color(self.tc.fg_dim));
+                    ui.label(
+                        RichText::new(title)
+                            .font(FontId::monospace(11.0))
+                            .color(self.tc.fg_dim),
+                    );
+
+                    // Right-aligned action buttons (vector icons — no font dependency).
+                    if self.app.sidebar_tab == SidebarTab::Files {
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                ui.add_space(10.0);
+                                // Reverse visual order due to right_to_left layout.
+                                if self.header_icon_button(ui, super::icons::refresh, "Refresh tree") {
+                                    self.app.file_tree.refresh();
+                                }
+                                if self.header_icon_button(ui, super::icons::menu_bars, "Collapse all") {
+                                    self.app.file_tree.collapse_all();
+                                }
+                                if self.header_icon_button(ui, super::icons::plus, "New file") {
+                                    self.app.pending_action = Some(PaletteAction::NewFile);
+                                }
+                            },
+                        );
+                    }
                 });
                 ui.add_space(6.0);
                 ui.painter().line_segment(
@@ -42,9 +67,9 @@ impl CodeEditorApp {
     /// the left edge. Clicking an active icon hides the sidebar; inactive switches tab.
     pub(super) fn render_activity_bar(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("activity_bar")
-            .exact_width(40.0)
+            .exact_width(56.0)
             .resizable(false)
-            .frame(egui::Frame::NONE.fill(self.tc.tab_bar_bg).inner_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 6 }))
+            .frame(egui::Frame::NONE.fill(self.tc.tab_bar_bg).inner_margin(egui::Margin { left: 0, right: 0, top: 10, bottom: 10 }))
             .show(ctx, |ui| {
                 let r = ui.max_rect();
                 // Right border separator
@@ -52,90 +77,136 @@ impl CodeEditorApp {
                     [Pos2::new(r.max.x, r.min.y), Pos2::new(r.max.x, r.max.y)],
                     Stroke::new(1.0, self.tc.border),
                 );
-                ui.spacing_mut().item_spacing.y = 2.0;
-                // JetBrainsMono lacks glyphs for many Misc-Technical icons (⎇ ⌕ etc), so use
-                // bold single letters as in JetBrains compact activity bar without icon fonts.
-                for (icon, tab, tip) in [
-                    ("P", SidebarTab::Files, "Project"),
-                    ("G", SidebarTab::Git, "Git"),
-                    ("F", SidebarTab::Search, "Find"),
-                ] {
-                    let active = self.app.show_sidebar && self.app.sidebar_tab == tab;
-                    let color = if active { self.tc.fg } else { self.tc.fg_dim };
-                    let resp = ui.add(
-                        egui::Button::new(
-                            RichText::new(icon).font(FontId::monospace(15.0)).color(color)
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .min_size(Vec2::new(40.0, 36.0))
-                        .corner_radius(CornerRadius::ZERO)
-                        .stroke(Stroke::NONE),
-                    ).on_hover_text(tip);
-                    if resp.clicked() {
+
+                // Top section: switchable tool windows. Icon kind selects which vector
+                // routine paints the glyph — no font dependency.
+                type IconFn = fn(&egui::Painter, Rect, Color32);
+                let tabs: &[(IconFn, SidebarTab, &str)] = &[
+                    (super::icons::document, SidebarTab::Files,  "Project"),
+                    (super::icons::search,   SidebarTab::Search, "Search"),
+                    (super::icons::branch,   SidebarTab::Git,    "Git"),
+                ];
+                for (draw, tab, tip) in tabs {
+                    let active = self.app.show_sidebar && self.app.sidebar_tab == *tab;
+                    let has_git_changes = *tip == "Git"
+                        && self
+                            .app
+                            .git_status
+                            .as_ref()
+                            .map(|g| g.is_repo && !g.files.is_empty())
+                            .unwrap_or(false);
+                    if self.activity_button(ui, *draw, *tip, active, false, has_git_changes) {
                         if active {
                             self.app.show_sidebar = false;
                         } else {
-                            self.app.sidebar_tab = tab;
+                            self.app.sidebar_tab = *tab;
                             self.app.show_sidebar = true;
                         }
                     }
-                    if active {
-                        let r = resp.rect;
-                        ui.painter().rect_filled(
-                            Rect::from_min_size(
-                                Pos2::new(r.min.x, r.min.y + 4.0),
-                                Vec2::new(2.0, r.height() - 8.0),
-                            ),
-                            CornerRadius::same(1), self.tc.accent,
-                        );
-                    }
+                }
+
+                // Stubs mirroring the mockup. Disabled (no click handler).
+                self.activity_button(ui, super::icons::gear, "Settings",   false, true, false);
+                self.activity_button(ui, super::icons::grid, "Extensions", false, true, false);
+
+                // Push the theme toggle to the very bottom.
+                let avail = ui.available_size();
+                if avail.y > 56.0 {
+                    ui.add_space(avail.y - 56.0);
+                }
+                if self.activity_button(ui, super::icons::sun, "Toggle theme", false, false, false) {
+                    let themes = Theme::ALL;
+                    let idx = themes
+                        .iter()
+                        .position(|t| *t == self.app.settings.theme)
+                        .unwrap_or(0);
+                    self.app.settings.theme = themes[(idx + 1) % themes.len()];
+                    self.app.settings.save();
                 }
             });
     }
 
+    /// Small 22×22 vector-icon button used in sidebar/header rows.
+    fn header_icon_button(
+        &self,
+        ui: &mut egui::Ui,
+        draw: fn(&egui::Painter, Rect, Color32),
+        tooltip: &str,
+    ) -> bool {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(22.0, 22.0), egui::Sense::click());
+        let resp = resp.on_hover_text(tooltip);
+        if resp.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(4),
+                Color32::from_rgba_unmultiplied(255, 255, 255, 14),
+            );
+        }
+        let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(14.0));
+        draw(ui.painter(), icon_rect, self.tc.fg_dim);
+        resp.clicked()
+    }
+
+    /// 40×40 activity-bar pill. Returns true when clicked.
+    /// `disabled` greys the icon and skips both hover and click.
+    /// `indicator_dot` paints a small accent dot in the upper-right (used on Git when dirty).
+    fn activity_button(
+        &self,
+        ui: &mut egui::Ui,
+        draw: fn(&egui::Painter, Rect, Color32),
+        tooltip: &str,
+        active: bool,
+        disabled: bool,
+        indicator_dot: bool,
+    ) -> bool {
+        let tc = self.tc;
+        let mut clicked = false;
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let btn_size = Vec2::new(40.0, 40.0);
+            let (rect, resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+            let resp = resp.on_hover_text(tooltip);
+            if active {
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(10),
+                    Color32::from_rgba_unmultiplied(tc.accent.r(), tc.accent.g(), tc.accent.b(), 46),
+                );
+            } else if !disabled && resp.hovered() {
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(10),
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 10),
+                );
+            }
+            let color = if active {
+                Color32::WHITE
+            } else if disabled {
+                Color32::from_rgba_unmultiplied(tc.fg_dim.r(), tc.fg_dim.g(), tc.fg_dim.b(), 130)
+            } else {
+                tc.fg_dim
+            };
+            // 22×22 icon centered in the 40×40 pill
+            let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(22.0));
+            draw(ui.painter(), icon_rect, color);
+            if indicator_dot {
+                ui.painter().circle_filled(
+                    Pos2::new(rect.max.x - 9.0, rect.min.y + 9.0),
+                    3.0,
+                    tc.accent,
+                );
+            }
+            if !disabled && resp.clicked() {
+                clicked = true;
+            }
+        });
+        clicked
+    }
+
     fn render_file_tree(&mut self, ui: &mut egui::Ui) {
         let dark = self.app.settings.theme.resolved() != Theme::Light;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(8.0);
-            for (icon, tip, action) in [
-                ("+", "New File in selected folder", 0u8),
-                ("□", "New Folder in selected folder", 1),
-                ("↻", "Refresh tree from disk", 2),
-            ] {
-                if ui.add(egui::Button::new(RichText::new(icon).font(small()).color(self.tc.fg_dim))
-                    .fill(Color32::TRANSPARENT).min_size(Vec2::new(22.0, 18.0))
-                    .corner_radius(CornerRadius::same(3)))
-                    .on_hover_text(tip).clicked()
-                {
-                    match action {
-                        0 => self.app.start_new_file_dialog(),
-                        1 => self.app.start_new_folder_dialog(),
-                        _ => self.app.file_tree.refresh(),
-                    }
-                }
-            }
-            // Right-side actions: open another / close this project (JetBrains-style).
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(6.0);
-                if ui.add(egui::Button::new(RichText::new("✕").font(small()).color(self.tc.fg_dim))
-                    .fill(Color32::TRANSPARENT).min_size(Vec2::new(22.0, 18.0))
-                    .corner_radius(CornerRadius::same(3)))
-                    .on_hover_text("Close Project (⌘⇧W)").clicked()
-                {
-                    self.app.close_project();
-                }
-                if ui.add(egui::Button::new(RichText::new("…").font(small()).color(self.tc.fg_dim))
-                    .fill(Color32::TRANSPARENT).min_size(Vec2::new(22.0, 18.0))
-                    .corner_radius(CornerRadius::same(3)))
-                    .on_hover_text("Open another folder (⌘O)").clicked()
-                {
-                    self.app.pending_action = Some(crate::app::PaletteAction::OpenFolder);
-                }
-            });
-        });
-        ui.add_space(2.0);
-
+        // The EXPLORER header (in render_sidebar) carries the +/collapse/refresh actions.
+        // The "open another folder" and "close project" actions live in File menu + ⌘O / ⌘⇧W.
         let row_h = 28.0;
         let indent_px = 18.0;
 
@@ -236,23 +307,33 @@ impl CodeEditorApp {
                 }.linear_multiply(dim);
 
                 if is_directory {
+                    // Chevron (dim) + hollow folder outline (dim gray) — matches the
+                    // Ferrite mockup where folders are subtle, not the icon's hero.
                     let arr = if is_expanded { "▾" } else { "▸" };
                     painter.text(
                         Pos2::new(row_rect.min.x + indent, row_y),
                         egui::Align2::LEFT_TOP, arr, FontId::monospace(12.0), arrow_color,
                     );
+                    let folder_color = self.tc.fg_dim.linear_multiply(dim);
+                    let folder_rect = Rect::from_min_size(
+                        Pos2::new(row_rect.min.x + indent + 14.0, row_rect.min.y + (row_h - 14.0) / 2.0),
+                        Vec2::splat(14.0),
+                    );
+                    super::icons::folder_outline(painter, folder_rect, folder_color);
                     painter.text(
-                        Pos2::new(row_rect.min.x + indent + 14.0, row_y),
+                        Pos2::new(row_rect.min.x + indent + 34.0, row_y),
                         egui::Align2::LEFT_TOP, entry_name, FontId::monospace(13.0), text_color,
                     );
                 } else {
+                    // File row: colored dot + filename (kept simple — JBMono has no
+                    // material-icon glyphs, and adding an icon font would be heavier).
                     let dot_color = file_icon_color(entry_name, dark).linear_multiply(dim);
                     let dot_y = row_rect.min.y + row_h / 2.0;
                     painter.circle_filled(
-                        Pos2::new(row_rect.min.x + indent + 5.0, dot_y), 3.5, dot_color,
+                        Pos2::new(row_rect.min.x + indent + 18.0, dot_y), 4.0, dot_color,
                     );
                     painter.text(
-                        Pos2::new(row_rect.min.x + indent + 14.0, row_y),
+                        Pos2::new(row_rect.min.x + indent + 30.0, row_y),
                         egui::Align2::LEFT_TOP, entry_name, FontId::monospace(13.0), text_color,
                     );
                 }

@@ -1,6 +1,7 @@
 use crate::editor::Editor;
 use crate::file_tree::FileTree;
 use crate::git::{GitManager, GitStatus};
+use crate::output::OutputConsole;
 use crate::search;
 use crate::settings::Settings;
 use crate::terminal::TerminalManager;
@@ -10,6 +11,7 @@ use notify::Watcher;
 pub enum Focus {
     Editor,
     Terminal,
+    Output,
     CommandPalette,
     QuickOpen,
     FindReplace,
@@ -19,8 +21,8 @@ pub enum Focus {
     NewFolderDialog,
     RenameDialog,
     DeleteConfirm,
-    CommitInput,
     SaveAsDialog,
+    RunCommandDialog,
     About,
 }
 
@@ -31,6 +33,12 @@ pub enum SidebarTab {
     Search,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BottomTab {
+    Terminal,
+    Output,
+}
+
 pub struct App {
     pub editors: Vec<Editor>,
     pub active_editor: usize,
@@ -38,12 +46,16 @@ pub struct App {
     pub git: GitManager,
     pub git_status: Option<GitStatus>,
     pub terminal: TerminalManager,
+    pub output: OutputConsole,
     pub settings: Settings,
     pub focus: Focus,
     pub show_sidebar: bool,
-    pub show_terminal: bool,
+    /// Bottom panel visibility. Toggles via ⌘`. Hosts the Terminal + Output tabs.
+    pub show_bottom_panel: bool,
+    pub bottom_tab: BottomTab,
     pub sidebar_tab: SidebarTab,
     pub status_message: String,
+    pub run_command_input: String,
 
     // Command palette
     pub palette_input: String,
@@ -152,6 +164,7 @@ pub enum PaletteAction {
     GoToLine,
     ToggleSidebar,
     ToggleTerminal,
+    ToggleOutput,
     ToggleTheme,
     ToggleWordWrap,
     ToggleLineNumbers,
@@ -160,6 +173,12 @@ pub enum PaletteAction {
     ToggleBreadcrumbs,
     ToggleAutoSave,
     QuickOpen,
+    RunBuild,
+    RunTests,
+    RunLast,
+    StopRunning,
+    ClearOutput,
+    RunCommand,
     Quit,
 }
 
@@ -173,12 +192,15 @@ impl App {
             git: GitManager::new(),
             git_status: None,
             terminal: TerminalManager::new(),
+            output: OutputConsole::new(),
             settings,
             focus: Focus::Editor,
             show_sidebar: true,
-            show_terminal: false,
+            show_bottom_panel: false,
+            bottom_tab: BottomTab::Terminal,
             sidebar_tab: SidebarTab::Files,
             status_message: String::from("Ready  |  Ctrl+Shift+P: commands  |  Ctrl+P: quick open"),
+            run_command_input: String::new(),
             palette_input: String::new(),
             palette_items: Self::build_palette_items(),
             palette_selected: 0,
@@ -240,6 +262,13 @@ impl App {
             PaletteItem { name: "Go to Line".into(), action: PaletteAction::GoToLine },
             PaletteItem { name: "Toggle Sidebar".into(), action: PaletteAction::ToggleSidebar },
             PaletteItem { name: "Toggle Terminal".into(), action: PaletteAction::ToggleTerminal },
+            PaletteItem { name: "Toggle Output Panel".into(), action: PaletteAction::ToggleOutput },
+            PaletteItem { name: "Run Build (cargo / npm / make)".into(), action: PaletteAction::RunBuild },
+            PaletteItem { name: "Run Tests".into(), action: PaletteAction::RunTests },
+            PaletteItem { name: "Re-run Last Command".into(), action: PaletteAction::RunLast },
+            PaletteItem { name: "Run Custom Command…".into(), action: PaletteAction::RunCommand },
+            PaletteItem { name: "Stop Running Command".into(), action: PaletteAction::StopRunning },
+            PaletteItem { name: "Clear Output Panel".into(), action: PaletteAction::ClearOutput },
             PaletteItem { name: "Toggle Theme (Dark/Light)".into(), action: PaletteAction::ToggleTheme },
             PaletteItem { name: "Toggle Word Wrap".into(), action: PaletteAction::ToggleWordWrap },
             PaletteItem { name: "Toggle Line Numbers".into(), action: PaletteAction::ToggleLineNumbers },
@@ -294,10 +323,12 @@ impl App {
         self.editors.clear();
         self.editors.push(Editor::new());
         self.active_editor = 0;
-        self.show_terminal = false;
+        self.show_bottom_panel = false;
         if let Some(id) = self.active_terminal.take() {
             let _ = id; // terminal threads will exit when the manager drops
         }
+        self.output.stop();
+        self.output.clear();
         self.focus = Focus::Editor;
         self.status_message = "Project closed".into();
     }
@@ -437,15 +468,36 @@ impl App {
             }
             PaletteAction::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
             PaletteAction::ToggleTerminal => {
-                self.show_terminal = !self.show_terminal;
-                if self.show_terminal && self.active_terminal.is_none() {
-                    self.spawn_terminal();
-                }
-                if self.show_terminal {
+                self.show_bottom_panel = !self.show_bottom_panel;
+                if self.show_bottom_panel {
+                    self.bottom_tab = BottomTab::Terminal;
+                    if self.active_terminal.is_none() {
+                        self.spawn_terminal();
+                    }
                     self.focus = Focus::Terminal;
                 } else {
                     self.focus = Focus::Editor;
                 }
+            }
+            PaletteAction::ToggleOutput => {
+                let was_output = self.show_bottom_panel && self.bottom_tab == BottomTab::Output;
+                if was_output {
+                    self.show_bottom_panel = false;
+                    self.focus = Focus::Editor;
+                } else {
+                    self.show_bottom_panel = true;
+                    self.bottom_tab = BottomTab::Output;
+                    self.focus = Focus::Output;
+                }
+            }
+            PaletteAction::RunBuild => self.run_build(),
+            PaletteAction::RunTests => self.run_tests(),
+            PaletteAction::RunLast => self.run_last(),
+            PaletteAction::StopRunning => self.output.stop(),
+            PaletteAction::ClearOutput => self.output.clear(),
+            PaletteAction::RunCommand => {
+                self.run_command_input.clear();
+                self.focus = Focus::RunCommandDialog;
             }
             PaletteAction::ToggleTheme => {
                 let themes = crate::settings::Theme::ALL;
@@ -500,24 +552,21 @@ impl App {
                 }
             }
             PaletteAction::OpenFolder => {
-                // Spawn native macOS folder picker in background thread
+                // rfd's native picker integrates with our NSWindow (osascript dialogs
+                // could appear behind the window after we enabled fullsize_content_view,
+                // requiring a second click). Spawned so the render thread keeps drawing
+                // while the picker is up.
                 let start_dir = self.file_tree.root_path.clone()
                     .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
                     .unwrap_or_else(|| ".".to_string());
                 let (tx, rx) = std::sync::mpsc::channel();
                 self.folder_picker_rx = Some(rx);
                 std::thread::spawn(move || {
-                    if let Ok(output) = std::process::Command::new("osascript")
-                        .arg("-e")
-                        .arg(format!("POSIX path of (choose folder with prompt \"Open Folder\" default location POSIX file \"{}\")", start_dir))
-                        .output()
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_directory(&start_dir)
+                        .pick_folder()
                     {
-                        if output.status.success() {
-                            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                            if !path.is_empty() {
-                                let _ = tx.send(path);
-                            }
-                        }
+                        let _ = tx.send(path.to_string_lossy().to_string());
                     }
                 });
             }
@@ -717,19 +766,16 @@ impl App {
     pub fn auto_save_tick(&mut self) {
         if !self.auto_save_enabled { return; }
         for editor in &mut self.editors {
-            if editor.is_dirty && editor.file_path.is_some() {
-                if let Some(last_edit) = editor.last_edit_time {
-                    if last_edit.elapsed().as_secs() >= 2 {
-                        let path = editor.file_path.clone().unwrap();
-                        let content = editor.buffer.text();
-                        std::thread::spawn(move || {
-                            let _ = std::fs::write(&path, content);
-                        });
-                        editor.is_dirty = false;
-                        editor.last_edit_time = None;
-                    }
-                }
-            }
+            let (Some(path), true) = (editor.file_path.as_ref(), editor.is_dirty) else { continue };
+            let Some(last_edit) = editor.last_edit_time else { continue };
+            if last_edit.elapsed().as_secs() < 2 { continue }
+            let path = path.clone();
+            let content = editor.buffer.text();
+            std::thread::spawn(move || {
+                let _ = std::fs::write(&path, content);
+            });
+            editor.is_dirty = false;
+            editor.last_edit_time = None;
         }
     }
 
@@ -852,17 +898,83 @@ impl App {
 // Remaining code after GUI migration removed
 // Git panel helpers for GUI
 impl App {
-    pub fn git_stage_all(&mut self) {
-        let root = match &self.file_tree.root_path {
-            Some(r) => r.clone(),
-            None => return,
+    /// Reveal the Output panel and switch its tab to "Output".
+    fn show_output_panel(&mut self) {
+        self.show_bottom_panel = true;
+        self.bottom_tab = BottomTab::Output;
+        self.focus = Focus::Output;
+    }
+
+    pub fn run_build(&mut self) {
+        let Some(root) = self.file_tree.root_path.clone() else {
+            self.status_message = "Open a folder first".into();
+            return;
         };
-        match self.git.stage_all(&root) {
-            Ok(_) => {
-                self.status_message = "Staged all files".into();
-                self.refresh_git_status();
+        match crate::output::detect_build(std::path::Path::new(&root)) {
+            Some((label, cmd, args)) => {
+                self.show_output_panel();
+                if let Err(e) = self.output.run(&cmd, &args, Some(&root)) {
+                    self.status_message = format!("Run failed: {}", e);
+                } else {
+                    self.status_message = format!("Running {}", label);
+                }
             }
-            Err(e) => self.status_message = format!("Error: {}", e),
+            None => {
+                self.status_message =
+                    "No build target detected (no Cargo.toml / package.json / Makefile)".into();
+            }
+        }
+    }
+
+    pub fn run_tests(&mut self) {
+        let Some(root) = self.file_tree.root_path.clone() else {
+            self.status_message = "Open a folder first".into();
+            return;
+        };
+        match crate::output::detect_test(std::path::Path::new(&root)) {
+            Some((label, cmd, args)) => {
+                self.show_output_panel();
+                if let Err(e) = self.output.run(&cmd, &args, Some(&root)) {
+                    self.status_message = format!("Run failed: {}", e);
+                } else {
+                    self.status_message = format!("Running {}", label);
+                }
+            }
+            None => {
+                self.status_message = "No test runner detected for this project".into();
+            }
+        }
+    }
+
+    pub fn run_last(&mut self) {
+        let Some(last) = self.output.last_command.clone() else {
+            self.status_message = "No previous command to re-run".into();
+            return;
+        };
+        self.show_output_panel();
+        if let Err(e) = self
+            .output
+            .run(&last.command, &last.args, last.cwd.as_deref())
+        {
+            self.status_message = format!("Run failed: {}", e);
+        }
+    }
+
+    /// Execute the freeform command typed in the Run Command dialog.
+    /// Splits on whitespace — quotes are not honored (kept simple).
+    pub fn submit_run_command(&mut self) {
+        let raw = self.run_command_input.trim().to_string();
+        if raw.is_empty() {
+            self.focus = Focus::Editor;
+            return;
+        }
+        let mut parts = raw.split_whitespace();
+        let Some(cmd) = parts.next() else { return };
+        let args: Vec<String> = parts.map(String::from).collect();
+        let cwd = self.file_tree.root_path.clone();
+        self.show_output_panel();
+        if let Err(e) = self.output.run(cmd, &args, cwd.as_deref()) {
+            self.status_message = format!("Run failed: {}", e);
         }
     }
 

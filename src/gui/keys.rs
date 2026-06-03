@@ -26,6 +26,16 @@ impl CodeEditorApp {
         let zoom_reset = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0));
         let find_in_project = ctx.input_mut(|i| i.consume_key(egui::Modifiers { command: true, shift: true, ..Default::default() }, egui::Key::F));
         let toggle_terminal = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Backtick));
+        let toggle_output = ctx.input_mut(|i| i.consume_key(
+            egui::Modifiers { command: true, shift: true, ..Default::default() },
+            egui::Key::U,
+        ));
+        let run_build = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::R));
+        let run_tests = ctx.input_mut(|i| i.consume_key(
+            egui::Modifiers { command: true, shift: true, ..Default::default() },
+            egui::Key::R,
+        ));
+        let stop_running = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Period));
         let split_editor = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Backslash));
         let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
 
@@ -65,8 +75,14 @@ impl CodeEditorApp {
             }
         }
         if toggle_terminal {
-            self.app.show_terminal = !self.app.show_terminal;
-            if self.app.show_terminal {
+            let was_terminal = self.app.show_bottom_panel
+                && self.app.bottom_tab == crate::app::BottomTab::Terminal;
+            if was_terminal {
+                self.app.show_bottom_panel = false;
+                self.app.focus = Focus::Editor;
+            } else {
+                self.app.show_bottom_panel = true;
+                self.app.bottom_tab = crate::app::BottomTab::Terminal;
                 if self.app.active_terminal.is_none() {
                     let dir = self.app.file_tree.root_path.as_deref();
                     if let Ok(id) = self.app.terminal.spawn(dir) {
@@ -74,9 +90,19 @@ impl CodeEditorApp {
                     }
                 }
                 self.app.focus = Focus::Terminal;
-            } else {
-                self.app.focus = Focus::Editor;
             }
+        }
+        if toggle_output {
+            self.app.execute_palette_action(PaletteAction::ToggleOutput);
+        }
+        if run_build {
+            self.app.run_build();
+        }
+        if run_tests {
+            self.app.run_tests();
+        }
+        if stop_running {
+            self.app.output.stop();
         }
         if new_file { self.app.editors.push(crate::editor::Editor::new()); self.app.active_editor = self.app.editors.len() - 1; self.app.focus = Focus::Editor; }
         if close_project { self.app.close_project(); }

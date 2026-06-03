@@ -305,57 +305,37 @@ impl CodeEditorApp {
                     });
                 });
             }
-            Focus::CommitInput => {
-                let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
-                egui::Area::new(egui::Id::new("commit")).fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.25, 80.0)).show(ctx, |ui| {
-                    popup_frame().show(ui, |ui| {
-                        ui.set_width(ctx.screen_rect().width() * 0.5);
-                        ui.label(RichText::new("Commit").font(mono()).color(self.tc.green));
-                        ui.add_space(4.0);
-                        // Show staged files count
-                        if let Some(ref status) = self.app.git_status {
-                            let staged_count = status.files.iter().filter(|f| f.staged).count();
-                            ui.label(RichText::new(format!("{} staged file(s)", staged_count)).font(small()).color(self.tc.fg_dim));
-                        }
-                        ui.add_space(6.0);
-                        let r = ui.add(egui::TextEdit::multiline(&mut self.app.commit_message)
-                            .font(mono())
-                            .hint_text("Commit message...")
-                            .desired_width(ui.available_width())
-                            .desired_rows(3)
-                            .text_color(self.tc.fg));
-                        r.request_focus();
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            let can_commit = !self.app.commit_message.trim().is_empty();
-                            if ui.add_enabled(can_commit,
-                                egui::Button::new(RichText::new(" Commit (⌘+Enter) ").color(Color32::WHITE))
-                                    .fill(if can_commit { Color32::from_rgb(40, 160, 80) } else { Color32::from_rgb(80, 80, 80) })
-                                    .corner_radius(CornerRadius::same(4))
-                            ).clicked() || (enter_pressed && can_commit) {
-                                let msg = self.app.commit_message.clone();
-                                if let Some(ref root) = self.app.file_tree.root_path.clone() {
-                                    match self.app.git.commit(root, &msg) {
-                                        Ok(_) => {
-                                            self.app.status_message = format!("Committed: {}", msg.lines().next().unwrap_or(""));
-                                            self.app.refresh_git_status();
-                                        }
-                                        Err(e) => self.app.status_message = format!("Commit error: {}", e),
-                                    }
-                                }
-                                self.app.commit_message.clear();
-                                self.app.focus = Focus::Editor;
-                            }
-                            ui.add_space(8.0);
-                            if ui.add(egui::Button::new(RichText::new(" Cancel ").color(self.tc.fg))
-                                .fill(self.tc.sidebar_bg).corner_radius(CornerRadius::same(4))
-                                .stroke(Stroke::new(1.0, self.tc.border))).clicked()
-                            {
-                                self.app.focus = Focus::Editor;
+            Focus::RunCommandDialog => {
+                let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+                egui::Area::new(egui::Id::new("runcmd"))
+                    .fixed_pos(egui::pos2(ctx.screen_rect().width() * 0.2, 80.0))
+                    .show(ctx, |ui| {
+                        popup_frame().show(ui, |ui| {
+                            ui.set_width(440.0);
+                            ui.label(RichText::new("Run Command").font(mono()).color(self.tc.accent));
+                            ui.add_space(2.0);
+                            let cwd_label = self.app.file_tree.root_path.as_deref().unwrap_or("(no folder open)");
+                            ui.label(RichText::new(format!("cwd: {}", cwd_label)).font(small()).color(self.tc.fg_dim));
+                            ui.add_space(6.0);
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut self.app.run_command_input)
+                                    .font(mono())
+                                    .hint_text("cargo run -- --flag")
+                                    .desired_width(420.0)
+                                    .text_color(self.tc.fg),
+                            );
+                            r.request_focus();
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new("⏎ to run, ⎋ to cancel")
+                                    .font(small())
+                                    .color(self.tc.fg_dim),
+                            );
+                            if enter_pressed && !self.app.run_command_input.trim().is_empty() {
+                                self.app.submit_run_command();
                             }
                         });
                     });
-                });
             }
             Focus::DeleteConfirm => {
                 if let Some(entry) = self.app.file_tree.selected_entry().cloned() {

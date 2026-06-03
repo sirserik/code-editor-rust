@@ -150,8 +150,11 @@ impl FileTree {
             .map(|e| {
                 let p = e.path();
                 let n = e.file_name().to_string_lossy().to_string();
-                let is_dir = p.is_dir();
-                // Don't recurse — just create the entry (children loaded on expand)
+                // `DirEntry::file_type()` reads the `d_type` cached from readdir on
+                // macOS/Linux, avoiding a per-entry lstat syscall — much faster on
+                // large folders. Like the old symlink_metadata it does NOT follow
+                // symlinks, so a directory symlink stays a file leaf.
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
                 FileEntry::new(p.to_string_lossy().to_string(), n, is_dir, child_depth)
             })
             .collect();
@@ -312,6 +315,27 @@ impl FileTree {
     pub fn refresh(&mut self) {
         if let Some(ref path) = self.root_path.clone() {
             self.load(path);
+        }
+    }
+
+    /// Collapse every directory back to its closed state, but keep the root expanded
+    /// so the user still sees the project's top-level entries (matches VS Code behaviour).
+    pub fn collapse_all(&mut self) {
+        if let Some(ref mut root) = self.root {
+            root.is_expanded = true;
+            for child in &mut root.children {
+                Self::collapse_subtree(child);
+            }
+        }
+        self.flatten();
+    }
+
+    fn collapse_subtree(entry: &mut FileEntry) {
+        if entry.is_directory {
+            entry.is_expanded = false;
+            for child in &mut entry.children {
+                Self::collapse_subtree(child);
+            }
         }
     }
 

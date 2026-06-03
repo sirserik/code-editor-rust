@@ -26,6 +26,7 @@ fn default_font_size() -> f32 { 14.0 }
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Theme {
     SystemDefault,
+    Ferrite,
     TokyoNight,
     Dracula,
     OneDark,
@@ -40,6 +41,7 @@ pub enum Theme {
 impl Theme {
     pub const ALL: &'static [Theme] = &[
         Theme::SystemDefault,
+        Theme::Ferrite,
         Theme::TokyoNight,
         Theme::Dracula,
         Theme::OneDark,
@@ -54,6 +56,7 @@ impl Theme {
     pub fn name(&self) -> &'static str {
         match self {
             Theme::SystemDefault => "System",
+            Theme::Ferrite => "Ferrite",
             Theme::TokyoNight => "Darcula",
             Theme::Dracula => "Dracula",
             Theme::OneDark => "One Dark",
@@ -96,7 +99,7 @@ impl Theme {
     /// Resolve SystemDefault to actual theme
     pub fn resolved(&self) -> Theme {
         if *self == Theme::SystemDefault {
-            if Self::system_is_dark() { Theme::TokyoNight } else { Theme::Light }
+            if Self::system_is_dark() { Theme::Ferrite } else { Theme::Light }
         } else {
             *self
         }
@@ -132,6 +135,35 @@ impl Theme {
         match self {
             // System Default — resolves to dark or light based on macOS setting
             Theme::SystemDefault => Theme::resolved(&Theme::SystemDefault).colors(),
+            // Ferrite — flagship dark theme: deep navy backgrounds with indigo accents.
+            // Palette extracted from the Ferrite design mockup.
+            Theme::Ferrite => ThemeColors {
+                bg: Color32::from_rgb(0x0b, 0x0d, 0x13),         // #0b0d13 editor surface
+                sidebar_bg: Color32::from_rgb(0x11, 0x13, 0x1b), // #11131b project pane
+                status_bg: Color32::from_rgb(0x0d, 0x0f, 0x16),  // #0d0f16 status strip
+                tab_bar_bg: Color32::from_rgb(0x0d, 0x0f, 0x16), // #0d0f16 chrome
+                fg: Color32::from_rgb(0xc8, 0xcf, 0xe0),         // #c8cfe0 primary text
+                fg_dim: Color32::from_rgb(0x69, 0x71, 0x8a),     // #69718a secondary text
+                gutter_fg: Color32::from_rgb(0x38, 0x3f, 0x52),  // #383f52 line numbers
+                accent: Color32::from_rgb(0x7c, 0x8c, 0xff),     // #7c8cff indigo accent
+                selection_bg: Color32::from_rgba_unmultiplied(0x7c, 0x8c, 0xff, 56), // ~22%
+                current_line_bg: Color32::from_rgb(0x16, 0x19, 0x22), // #161922
+                cursor_color: Color32::from_rgb(0x7c, 0x8c, 0xff),
+                border: Color32::from_rgb(0x1c, 0x22, 0x33),     // #1c2233 hairline
+                bracket_match_bg: Color32::from_rgb(0x2a, 0x33, 0x4a),
+                red: Color32::from_rgb(0xff, 0x6b, 0x88),
+                green: Color32::from_rgb(0xb5, 0xe0, 0x8e),     // #b5e08e strings
+                orange: Color32::from_rgb(0xfb, 0xbf, 0x24),
+                fold_fg: Color32::from_rgb(0x4a, 0x52, 0x66),
+                bracket_colors: [
+                    Color32::from_rgb(0xc7, 0x9b, 0xff),   // purple (keywords)
+                    Color32::from_rgb(0x82, 0xaa, 0xff),   // blue (functions)
+                    Color32::from_rgb(0x7f, 0xdc, 0xf0),   // cyan
+                    Color32::from_rgb(0xb5, 0xe0, 0x8e),   // green (strings)
+                    Color32::from_rgb(0xfb, 0xbf, 0x24),   // yellow
+                    Color32::from_rgb(0xff, 0x6b, 0x88),   // pink/red
+                ],
+            },
             // Darcula — Zed One Dark inspired palette
             Theme::TokyoNight => ThemeColors {
                 bg: Color32::from_rgb(40, 44, 51),              // #282c33
@@ -384,10 +416,10 @@ impl Theme {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            theme: Theme::SystemDefault,
+            theme: Theme::Ferrite,
             tab_size: 4,
             show_line_numbers: true,
-            word_wrap: false,
+            word_wrap: true,
             font_size: 14.0,
             recent_projects: Vec::new(),
         }
@@ -432,11 +464,21 @@ impl Settings {
 
 impl Settings {
     fn config_path() -> PathBuf {
-        let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("code-editor-rust");
-        fs::create_dir_all(&config_dir).ok();
-        config_dir.join("settings.json")
+        // Tests must not pollute the real user config (we previously had stray
+        // `/test/project*` entries in recent_projects from `cargo test`).
+        #[cfg(test)]
+        {
+            return std::env::temp_dir()
+                .join(format!("code-editor-rust-test-{}.json", std::process::id()));
+        }
+        #[cfg(not(test))]
+        {
+            let config_dir = dirs::config_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("code-editor-rust");
+            fs::create_dir_all(&config_dir).ok();
+            config_dir.join("settings.json")
+        }
     }
 
     pub fn load() -> Self {
@@ -465,10 +507,10 @@ mod tests {
     #[test]
     fn default_settings() {
         let s = Settings::default();
-        assert_eq!(s.theme, Theme::SystemDefault);
+        assert_eq!(s.theme, Theme::Ferrite);
         assert_eq!(s.tab_size, 4);
         assert!(s.show_line_numbers);
-        assert!(!s.word_wrap);
+        assert!(s.word_wrap);
         assert_eq!(s.font_size, 14.0);
         assert!(s.recent_projects.is_empty());
     }
@@ -490,8 +532,8 @@ mod tests {
     #[test]
     fn theme_resolved_system() {
         let resolved = Theme::SystemDefault.resolved();
-        // Should resolve to either Light or TokyoNight
-        assert!(resolved == Theme::Light || resolved == Theme::TokyoNight);
+        // Should resolve to either Light or Ferrite (the dark default)
+        assert!(resolved == Theme::Light || resolved == Theme::Ferrite);
     }
 
     #[test]

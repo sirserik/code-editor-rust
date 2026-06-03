@@ -310,11 +310,61 @@ impl GitManager {
         } else {
             branch
         };
+        validate_branch_name(local_name)?;
         Self::run_cli(repo_path, &["checkout", local_name]).map(|_| ())
     }
 
     pub fn create_branch(repo_path: &str, name: &str) -> Result<(), String> {
+        validate_branch_name(name)?;
         Self::run_cli(repo_path, &["checkout", "-b", name]).map(|_| ())
+    }
+}
+
+/// Reject branch names that could be misinterpreted as `git` flags or contain
+/// shell metacharacters. `Command::args` is safe from shell parsing, but a name
+/// starting with `-` (e.g. `--upload-pack=…`) is still interpreted as an option.
+fn validate_branch_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Branch name cannot be empty".into());
+    }
+    if name.starts_with('-') {
+        return Err("Branch name cannot start with '-'".into());
+    }
+    // git's own rules also reject these characters / sequences in refs.
+    let bad = [' ', '\t', '\n', '~', '^', ':', '?', '*', '[', '\\'];
+    if name.chars().any(|c| bad.contains(&c) || c.is_control()) {
+        return Err("Branch name contains illegal characters".into());
+    }
+    if name.contains("..") || name.ends_with('.') || name.ends_with('/') {
+        return Err("Branch name has an illegal sequence".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod branch_validation_tests {
+    use super::validate_branch_name;
+
+    #[test]
+    fn accepts_normal_branch() {
+        assert!(validate_branch_name("feature/new-thing").is_ok());
+        assert!(validate_branch_name("main").is_ok());
+        assert!(validate_branch_name("release-2026.05").is_ok());
+    }
+
+    #[test]
+    fn rejects_flag_lookalikes() {
+        assert!(validate_branch_name("-upload-pack=evil").is_err());
+        assert!(validate_branch_name("--help").is_err());
+    }
+
+    #[test]
+    fn rejects_illegal_characters() {
+        assert!(validate_branch_name("").is_err());
+        assert!(validate_branch_name("foo bar").is_err());
+        assert!(validate_branch_name("foo..bar").is_err());
+        assert!(validate_branch_name("foo:bar").is_err());
+        assert!(validate_branch_name("foo/").is_err());
     }
 }
 
