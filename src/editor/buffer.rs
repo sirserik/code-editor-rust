@@ -50,8 +50,58 @@ impl Buffer {
             return String::new();
         }
         let line_slice = self.rope.line(line);
-        let s = line_slice.to_string();
-        s.trim_end_matches(&['\n', '\r'][..]).to_string()
+        // Build the String once and trim in place. `to_string()` followed by
+        // `trim_end().to_string()` allocated (and copied) the line twice, and
+        // this runs for every visible line on every frame.
+        let mut s = String::with_capacity(line_slice.len_bytes());
+        for chunk in line_slice.chunks() {
+            s.push_str(chunk);
+        }
+        let keep = s.trim_end_matches(['\n', '\r']).len();
+        s.truncate(keep);
+        s
+    }
+
+    /// Iterate a line's characters (newline excluded) straight off the rope —
+    /// no intermediate `String`. Preferred over `get_line()` in scan loops.
+    ///
+    /// Goes chunk → `str::chars` rather than using ropey's per-character
+    /// iterator, which carries noticeably more overhead per character.
+    pub fn line_chars(&self, line: usize) -> impl Iterator<Item = char> + '_ {
+        let (slice, take) = if line >= self.rope.len_lines() {
+            (self.rope.slice(0..0), 0)
+        } else {
+            (self.rope.line(line), self.line_len(line))
+        };
+        slice.chunks().flat_map(|c| c.chars()).take(take)
+    }
+
+    /// Fill `out` with at most `max` characters of `line` (newline excluded),
+    /// reusing the caller's buffer instead of allocating a fresh `Vec<char>`.
+    pub fn line_chars_into(&self, line: usize, max: usize, out: &mut Vec<char>) {
+        out.clear();
+        if line >= self.rope.len_lines() {
+            return;
+        }
+        let slice = self.rope.line(line);
+        out.reserve(slice.len_chars().min(max));
+        for chunk in slice.chunks() {
+            let room = max - out.len();
+            if room == 0 {
+                break;
+            }
+            // `chunk.len()` is bytes and bytes ≥ chars, so this is a safe
+            // "definitely fits" test that keeps the common case branch-free.
+            if chunk.len() <= room {
+                out.extend(chunk.chars());
+            } else {
+                out.extend(chunk.chars().take(room));
+                break;
+            }
+        }
+        while matches!(out.last(), Some('\n' | '\r')) {
+            out.pop();
+        }
     }
 
     pub fn get_line_indent(&self, line: usize) -> String {
@@ -121,9 +171,12 @@ impl Buffer {
             pos + 1
         };
         self.rope.insert(insert_pos, &content);
-        if line + 2 >= self.rope.len_lines() || insert_pos + content.len() >= self.rope.len_chars()
+        // Rope indices are char offsets — `content.len()` (bytes) would land
+        // mid-character on any non-ASCII line.
+        let content_chars = content.chars().count();
+        if line + 2 >= self.rope.len_lines() || insert_pos + content_chars >= self.rope.len_chars()
         {
-            self.rope.insert_char(insert_pos + content.len(), '\n');
+            self.rope.insert_char(insert_pos + content_chars, '\n');
         }
     }
 

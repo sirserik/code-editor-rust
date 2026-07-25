@@ -31,6 +31,9 @@ pub struct Editor {
     undo_stack: Vec<(String, usize, usize)>, // (content, cursor_line, cursor_col)
     redo_stack: Vec<(String, usize, usize)>,
     undo_counter: usize, // track changes for periodic snapshots
+    /// When the last undo snapshot was taken — used to coalesce a typing burst
+    /// into one undo step instead of one per character.
+    last_snapshot_time: Option<std::time::Instant>,
     // Code folding: maps fold start line -> fold end line
     pub fold_ranges: HashMap<usize, usize>,
     pub fold_ranges_computed: bool, // sticky flag to avoid re-running scan when ranges are empty
@@ -49,20 +52,32 @@ pub struct Editor {
     // Cached syntax highlights per line (Scintilla-style)
     pub highlight_cache: Vec<Vec<crate::syntax::HighlightSpan>>,
     pub highlight_cache_lang: String,
-    /// Dark/light mode the highlight cache was built under. Syntect bakes
-    /// absolute RGB into each span, so a theme switch must rebuild the cache —
-    /// otherwise dark colors get painted on the light background (unreadable).
-    pub highlight_cache_dark: Option<bool>,
+    /// Editor colour scheme the highlight cache was built under. Syntect bakes
+    /// absolute RGB into each span, so switching themes must rebuild the cache —
+    /// otherwise Darcula colours get painted on IntelliJ Light's white page.
+    /// Keyed by the *scheme*, not a dark/light flag: two dark themes can have
+    /// completely different code colours.
+    pub highlight_cache_theme: Option<crate::settings::SyntaxTheme>,
     pub highlight_dirty_from: Option<usize>, // re-highlight from this line
     // Async analysis: the whole-buffer syntect pass + fold scan run on a worker
     // thread so opening/editing a file never blocks the UI. `highlight_gen` is
     // bumped whenever a re-analysis is needed; the worker tags its result with the
     // gen it ran for, and a stale result (older gen) is discarded. Coalesces bursts.
-    // Payload: (gen, per-line highlight spans, fold-start→fold-end ranges).
+    // Payload: (gen, per-line highlight spans, fold-start→fold-end ranges,
+    // syntax diagnostics). Diagnostics ride along because `check_syntax` is
+    // another whole-buffer O(n) pass that has no business on the UI thread.
     #[allow(clippy::type_complexity)]
-    pub highlight_rx: Option<std::sync::mpsc::Receiver<(u64, Vec<Vec<crate::syntax::HighlightSpan>>, HashMap<usize, usize>)>>,
+    pub highlight_rx: Option<std::sync::mpsc::Receiver<AnalysisResult>>,
     pub highlight_gen: u64,
     pub highlight_applied_gen: u64,
+}
+
+/// One completed background analysis pass of a buffer.
+pub struct AnalysisResult {
+    pub generation: u64,
+    pub highlights: Vec<Vec<crate::syntax::HighlightSpan>>,
+    pub folds: HashMap<usize, usize>,
+    pub diagnostics: Vec<SyntaxError>,
 }
 
 /// Compute brace/bracket fold ranges from raw text. Pure (no `&self`) so it can
@@ -116,6 +131,7 @@ impl Editor {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             undo_counter: 0,
+            last_snapshot_time: None,
             fold_ranges: HashMap::new(),
             fold_ranges_computed: false,
             folded: HashSet::new(),
@@ -127,7 +143,7 @@ impl Editor {
             extra_cursors: Vec::new(),
             highlight_cache: Vec::new(),
             highlight_cache_lang: String::new(),
-            highlight_cache_dark: None,
+            highlight_cache_theme: None,
             highlight_dirty_from: Some(0),
             highlight_rx: None,
             highlight_gen: 0,
@@ -152,6 +168,7 @@ impl Editor {
             undo_stack: vec![(initial_content.clone(), 0, 0)],
             redo_stack: Vec::new(),
             undo_counter: 0,
+            last_snapshot_time: None,
             fold_ranges: HashMap::new(),
             fold_ranges_computed: false,
             folded: HashSet::new(),
@@ -163,7 +180,7 @@ impl Editor {
             extra_cursors: Vec::new(),
             highlight_cache: Vec::new(),
             highlight_cache_lang: String::new(),
-            highlight_cache_dark: None,
+            highlight_cache_theme: None,
             highlight_dirty_from: Some(0),
             highlight_rx: None,
             highlight_gen: 0,
@@ -186,16 +203,19 @@ impl Editor {
         let mut tab_count = 0u32;
         let sample = self.buffer.line_count().min(100);
         for li in 0..sample {
-            let line = self.buffer.get_line(li);
-            if line.is_empty() { continue; }
-            let first_char = line.chars().next().unwrap_or(' ');
-            if first_char == '\t' {
-                tab_count += 1;
-            } else if first_char == ' ' {
-                let spaces = line.chars().take_while(|c| *c == ' ').count();
-                if (2..=8).contains(&spaces) {
-                    space_counts[spaces] += 1;
+            // Only the leading whitespace matters — read it straight off the
+            // rope rather than allocating a `String` per sampled line (this runs
+            // on every Tab press).
+            let mut chars = self.buffer.line_chars(li);
+            match chars.next() {
+                Some('\t') => tab_count += 1,
+                Some(' ') => {
+                    let spaces = 1 + chars.take_while(|c| *c == ' ').count();
+                    if (2..=8).contains(&spaces) {
+                        space_counts[spaces] += 1;
+                    }
                 }
+                _ => continue,
             }
         }
         if tab_count > space_counts.iter().sum::<u32>() {
@@ -443,13 +463,24 @@ impl Editor {
     }
 
     /// Visual rows a logical line occupies under the active wrap width (≥ 1).
+    #[allow(dead_code)] // convenience wrapper; hot paths use `line_visual_rows_in`
     pub fn line_visual_rows(&self, line: usize) -> usize {
         if self.wrap_cols == usize::MAX {
             return 1;
         }
-        let chars: Vec<char> = self.buffer.get_line(line).chars().take(crate::wrap::MAX_LINE_LEN).collect();
-        let mut scratch = Vec::new();
-        crate::wrap::visual_rows(&chars, self.wrap_cols, &mut scratch)
+        let (mut chars, mut starts) = (Vec::new(), Vec::new());
+        self.line_visual_rows_in(line, &mut chars, &mut starts)
+    }
+
+    /// `line_visual_rows` with caller-owned scratch buffers — the loop-friendly
+    /// form. Wrap layout used to allocate a `String` *and* a `Vec<char>` per
+    /// line, which is brutal inside the per-line loops below.
+    fn line_visual_rows_in(&self, line: usize, chars: &mut Vec<char>, starts: &mut Vec<usize>) -> usize {
+        if self.wrap_cols == usize::MAX {
+            return 1;
+        }
+        self.buffer.line_chars_into(line, crate::wrap::MAX_LINE_LEN, chars);
+        crate::wrap::visual_rows(chars, self.wrap_cols, starts)
     }
 
     /// Which visual row (0-based) the cursor column sits on within its line.
@@ -457,7 +488,8 @@ impl Editor {
         if self.wrap_cols == usize::MAX {
             return 0;
         }
-        let chars: Vec<char> = self.buffer.get_line(line).chars().take(crate::wrap::MAX_LINE_LEN).collect();
+        let mut chars = Vec::new();
+        self.buffer.line_chars_into(line, crate::wrap::MAX_LINE_LEN, &mut chars);
         let mut scratch = Vec::new();
         crate::wrap::visual_row_of_col(&chars, self.wrap_cols, col, &mut scratch)
     }
@@ -465,19 +497,36 @@ impl Editor {
     pub fn page_up(&mut self) {
         // Move the cursor up by roughly one viewport, measured in visual rows so
         // a screenful of wrapped text equals a screenful of logical lines.
-        let mut budget = self.viewport_height.saturating_sub(2);
+        let budget0 = self.viewport_height.saturating_sub(2);
+        if self.wrap_cols == usize::MAX {
+            // No wrapping: one row per line, so the walk is plain arithmetic.
+            self.cursor.line = self.cursor.line.saturating_sub(budget0);
+            self.clamp_cursor();
+            return;
+        }
+        let (mut chars, mut starts) = (Vec::new(), Vec::new());
+        let mut budget = budget0;
         while budget > 0 && self.cursor.line > 0 {
             self.cursor.line -= 1;
-            budget = budget.saturating_sub(self.line_visual_rows(self.cursor.line));
+            let rows = self.line_visual_rows_in(self.cursor.line, &mut chars, &mut starts);
+            budget = budget.saturating_sub(rows);
         }
         self.clamp_cursor();
     }
 
     pub fn page_down(&mut self) {
         let last = self.buffer.line_count().saturating_sub(1);
-        let mut budget = self.viewport_height.saturating_sub(2);
+        let budget0 = self.viewport_height.saturating_sub(2);
+        if self.wrap_cols == usize::MAX {
+            self.cursor.line = (self.cursor.line + budget0).min(last);
+            self.clamp_cursor();
+            return;
+        }
+        let (mut chars, mut starts) = (Vec::new(), Vec::new());
+        let mut budget = budget0;
         while budget > 0 && self.cursor.line < last {
-            budget = budget.saturating_sub(self.line_visual_rows(self.cursor.line));
+            let rows = self.line_visual_rows_in(self.cursor.line, &mut chars, &mut starts);
+            budget = budget.saturating_sub(rows);
             self.cursor.line += 1;
         }
         self.cursor.line = self.cursor.line.min(last);
@@ -495,27 +544,98 @@ impl Editor {
             return;
         }
 
+        if self.cursor.line < so {
+            return;
+        }
+
+        // No wrapping: rows == lines, so both walks below collapse to arithmetic
+        // instead of a per-line wrap layout pass.
+        if self.wrap_cols == usize::MAX {
+            let rows = self.cursor.line - so;
+            if rows + margin >= vp_rows {
+                let top = (self.cursor.line + margin + 1 - vp_rows).min(self.cursor.line);
+                self.scroll_offset = top as f32;
+            }
+            return;
+        }
+
         // Scroll down: count visual rows from the top of the viewport to the
         // cursor's row; if it falls past the bottom margin, pull the top line
         // forward until the cursor (plus margin) fits.
-        if self.cursor.line >= so {
-            let mut rows = self.cursor_visual_row(self.cursor.line, self.cursor.col);
-            for l in so..self.cursor.line {
-                rows += self.line_visual_rows(l);
-            }
-            if rows + margin >= vp_rows {
-                // Walk the top line downward, dropping its visual rows, until the
-                // cursor's row sits within the viewport (leaving the margin).
-                let target = rows + margin + 1 - vp_rows; // visual rows to drop off the top
-                let mut dropped = 0;
-                let mut top = so;
-                while top < self.cursor.line && dropped < target {
-                    dropped += self.line_visual_rows(top);
-                    top += 1;
-                }
-                self.scroll_offset = top as f32;
-            }
+        let (mut chars, mut starts) = (Vec::new(), Vec::new());
+        let mut rows = self.cursor_visual_row(self.cursor.line, self.cursor.col);
+        for l in so..self.cursor.line {
+            rows += self.line_visual_rows_in(l, &mut chars, &mut starts);
         }
+        if rows + margin >= vp_rows {
+            // Walk the top line downward, dropping its visual rows, until the
+            // cursor's row sits within the viewport (leaving the margin).
+            let target = rows + margin + 1 - vp_rows; // visual rows to drop off the top
+            let mut dropped = 0;
+            let mut top = so;
+            while top < self.cursor.line && dropped < target {
+                dropped += self.line_visual_rows_in(top, &mut chars, &mut starts);
+                top += 1;
+            }
+            self.scroll_offset = top as f32;
+        }
+    }
+
+    /// Scroll the viewport by `dy` pixels — positive scrolls *down* the document.
+    ///
+    /// `scroll_offset` is a logical line plus a fraction *through that line's
+    /// wrapped block*, so the walk has to move by real pixel heights: a line
+    /// wrapped into three rows is three times as tall as an unwrapped one.
+    /// `row_h` is the pixel height of a single visual row.
+    pub fn scroll_by_pixels(&mut self, dy: f32, row_h: f32) {
+        let last = self.buffer.line_count().saturating_sub(1);
+        let mut line = self.scroll_offset.floor().max(0.0) as usize;
+        line = line.min(last);
+        let frac = (self.scroll_offset - line as f32).clamp(0.0, 1.0);
+
+        let (mut chars, mut starts) = (Vec::new(), Vec::new());
+        macro_rules! h_of {
+            ($l:expr) => {
+                self.line_visual_rows_in($l, &mut chars, &mut starts) as f32 * row_h
+            };
+        }
+
+        // Pixels into the top line's block, then move by `dy`.
+        let mut within = frac * h_of!(line) + dy;
+
+        // Carry downward through whole lines.
+        loop {
+            let h = h_of!(line);
+            if within < h {
+                break;
+            }
+            if line >= last {
+                // Bottom of the document: swallow the overflow so the last line
+                // stays pinned to the top of the viewport.
+                //
+                // This clamp used to also run for *upward* movement (the loop
+                // condition was `within < h || line >= last`), which floored a
+                // negative `within` to 0 before the upward carry below could
+                // use it. The effect: once the last line reached the top of the
+                // viewport, the wheel could never scroll back up again.
+                within = within.min(h - 1.0).max(0.0);
+                break;
+            }
+            within -= h;
+            line += 1;
+        }
+
+        // Carry upward.
+        while within < 0.0 && line > 0 {
+            line -= 1;
+            within += h_of!(line);
+        }
+        if within < 0.0 {
+            within = 0.0; // already at the very top
+        }
+
+        let h = h_of!(line).max(row_h);
+        self.scroll_offset = line as f32 + (within / h).clamp(0.0, 0.9999);
     }
 
     pub fn go_to_line(&mut self, line: usize) {
@@ -680,8 +800,26 @@ impl Editor {
         }
     }
 
+    /// Snapshot for undo, but at most once per typing burst.
+    ///
+    /// The typing path called `save_undo_snapshot` for *every* character, and a
+    /// snapshot is a full `buffer.text()` clone plus a full comparison against
+    /// the previous one — O(file size) per keystroke, and up to 200 whole copies
+    /// of the file resident in the undo stack. Coalescing gives editor-style
+    /// undo granularity (one step per typing burst) at a fraction of the cost.
+    pub fn save_undo_snapshot_coalesced(&mut self) {
+        const COALESCE_MS: u128 = 400;
+        if let Some(t) = self.last_snapshot_time {
+            if t.elapsed().as_millis() < COALESCE_MS {
+                return;
+            }
+        }
+        self.save_undo_snapshot();
+    }
+
     pub fn save_undo_snapshot(&mut self) {
         let content = self.buffer.text();
+        self.last_snapshot_time = Some(std::time::Instant::now());
         // Don't save duplicate snapshots
         if let Some(last) = self.undo_stack.last() {
             if last.0 == content {
@@ -690,12 +828,19 @@ impl Editor {
         }
         let cursor_line = self.cursor.line;
         let cursor_col = self.cursor.col;
+        // Bound *memory*, not just depth: each entry is a full copy of the file,
+        // so 200 snapshots of a 5 MB file would be a gigabyte of history.
+        let max_snapshots = match content.len() {
+            0..=100_000 => 200,
+            100_001..=1_000_000 => 60,
+            _ => 20,
+        };
         self.undo_stack.push((content, cursor_line, cursor_col));
         // Clear redo stack on new edit
         self.redo_stack.clear();
-        // Limit stack size
-        if self.undo_stack.len() > 200 {
-            self.undo_stack.drain(..50);
+        if self.undo_stack.len() > max_snapshots {
+            let excess = self.undo_stack.len() - max_snapshots;
+            self.undo_stack.drain(..excess);
         }
     }
 
@@ -761,15 +906,60 @@ impl Editor {
         self.buffer.line_count()
     }
 
-    /// Collect all words from the buffer for autocomplete
+    /// Collect all words from the buffer for autocomplete.
+    ///
+    /// This runs on *every keystroke*, so it must not copy the file: the old
+    /// version called `buffer.text()` first, i.e. a full-buffer allocation per
+    /// character typed. Here the rope is scanned chunk by chunk with the fast
+    /// `str::split` path, carrying words that straddle a chunk boundary. Past
+    /// `FULL_SCAN_LIMIT` characters the scan is confined to a window around the
+    /// cursor so typing in a multi-megabyte file stays responsive.
     pub fn collect_words(&self, prefix: &str) -> Vec<String> {
-        let mut words = HashSet::new();
-        let text = self.buffer.text();
-        for word in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
-            if word.len() >= 2 && word != prefix && word.starts_with(prefix) {
-                words.insert(word.to_string());
+        const FULL_SCAN_LIMIT: usize = 200_000; // characters
+        const WINDOW_LINES: usize = 2_000;
+
+        let rope = &self.buffer.rope;
+        let slice = if rope.len_chars() <= FULL_SCAN_LIMIT {
+            rope.slice(..)
+        } else {
+            let lc = rope.len_lines();
+            let first = self.cursor.line.saturating_sub(WINDOW_LINES);
+            let last = self.cursor.line + WINDOW_LINES;
+            let end = if last + 1 >= lc { rope.len_chars() } else { rope.line_to_char(last + 1) };
+            rope.slice(rope.line_to_char(first.min(lc.saturating_sub(1)))..end)
+        };
+
+        let is_boundary = |c: char| !(c.is_alphanumeric() || c == '_');
+        let mut words: HashSet<String> = HashSet::new();
+        let keep = |w: &str, words: &mut HashSet<String>| {
+            if w.len() >= 2 && w != prefix && w.starts_with(prefix) {
+                words.insert(w.to_string());
+            }
+        };
+        // A word can straddle a chunk boundary, so the trailing fragment of one
+        // chunk is joined to the leading fragment of the next.
+        let mut carry = String::new();
+        for chunk in slice.chunks() {
+            let mut parts = chunk.split(is_boundary).peekable();
+            if let Some(first) = parts.next() {
+                if parts.peek().is_none() {
+                    carry.push_str(first); // whole chunk is one fragment
+                    continue;
+                }
+                carry.push_str(first);
+                keep(&carry, &mut words);
+                carry.clear();
+            }
+            while let Some(part) = parts.next() {
+                if parts.peek().is_none() {
+                    carry.push_str(part); // may continue into the next chunk
+                } else {
+                    keep(part, &mut words);
+                }
             }
         }
+        keep(&carry, &mut words);
+
         let mut result: Vec<String> = words.into_iter().collect();
         result.sort();
         result.truncate(12);
@@ -794,19 +984,24 @@ impl Editor {
             Some(c) => c,
             None => return,
         };
-        let orig_lines: Vec<&str> = original.lines().collect();
         let lc = self.buffer.line_count();
         // Only diff visible range + margin to avoid O(n) per frame
         let so = self.scroll_offset as usize;
         let start = so.saturating_sub(5);
         let end = (so + self.viewport_height + 10).min(lc);
+        // Walk the baseline's lines lazily. Collecting them into a `Vec<&str>`
+        // first allocated one entry per line of the whole file every time this
+        // ran (once a second while the buffer is dirty).
+        let mut orig = original.lines().skip(start);
         for li in start..end {
-            if li >= orig_lines.len() {
-                self.line_diff.insert(li, LineDiffStatus::Added);
-            } else {
-                let current = self.buffer.get_line(li);
-                if current != orig_lines[li] {
-                    self.line_diff.insert(li, LineDiffStatus::Modified);
+            match orig.next() {
+                Some(orig_line) => {
+                    if self.buffer.get_line(li) != orig_line {
+                        self.line_diff.insert(li, LineDiffStatus::Modified);
+                    }
+                }
+                None => {
+                    self.line_diff.insert(li, LineDiffStatus::Added);
                 }
             }
         }
@@ -846,12 +1041,29 @@ impl Editor {
         };
         if search_word.is_empty() { return; }
 
+        // Cursor columns are *character* offsets while `str::find` works in
+        // bytes — mixing them panicked on any line containing non-ASCII text
+        // (Cyrillic, emoji, box-drawing…). Translate on both sides.
+        let word_chars = search_word.chars().count();
+        let find_from = |line: &str, from_char: usize| -> Option<usize> {
+            let byte_start = if from_char == 0 {
+                0
+            } else {
+                match line.char_indices().nth(from_char) {
+                    Some((b, _)) => b,
+                    None => return None,
+                }
+            };
+            line[byte_start..]
+                .find(search_word.as_str())
+                .map(|pos| line[..byte_start + pos].chars().count())
+        };
+
         // Search from cursor position
         for li in self.cursor.line..lc {
             let line = self.buffer.get_line(li);
             let start_col = if li == self.cursor.line { self.cursor.col + 1 } else { 0 };
-            if let Some(pos) = line[start_col..].find(&search_word) {
-                let col = start_col + pos;
+            if let Some(col) = find_from(&line, start_col) {
                 // Add current cursor as extra cursor
                 self.extra_cursors.push(Cursor { line: self.cursor.line, col: self.cursor.col });
                 self.cursor.line = li;
@@ -860,7 +1072,7 @@ impl Editor {
                     start_line: li,
                     start_col: col,
                     end_line: li,
-                    end_col: col + search_word.len(),
+                    end_col: col + word_chars,
                 });
                 self.scroll_into_view();
                 return;
@@ -869,15 +1081,15 @@ impl Editor {
         // Wrap around from top
         for li in 0..self.cursor.line {
             let line = self.buffer.get_line(li);
-            if let Some(pos) = line.find(&search_word) {
+            if let Some(col) = find_from(&line, 0) {
                 self.extra_cursors.push(Cursor { line: self.cursor.line, col: self.cursor.col });
                 self.cursor.line = li;
-                self.cursor.col = pos;
+                self.cursor.col = col;
                 self.selection = Some(Selection {
                     start_line: li,
-                    start_col: pos,
+                    start_col: col,
                     end_line: li,
-                    end_col: pos + search_word.len(),
+                    end_col: col + word_chars,
                 });
                 self.scroll_into_view();
                 return;
@@ -904,33 +1116,65 @@ impl Editor {
     }
 
     /// Check if a line is hidden by folding
+    #[allow(dead_code)] // single-line query; `visible_lines` uses `hidden_intervals`
     pub fn is_line_folded(&self, line: usize) -> bool {
-        for (&start, &end) in &self.fold_ranges {
-            if self.folded.contains(&start) && line > start && line <= end {
-                return true;
+        if self.folded.is_empty() {
+            return false;
+        }
+        for &start in &self.folded {
+            if let Some(&end) = self.fold_ranges.get(&start) {
+                if line > start && line <= end {
+                    return true;
+                }
             }
         }
         false
     }
 
+    /// Folded regions as sorted, half-open-free `(first_hidden, last_hidden)`
+    /// line intervals. Built once per query instead of re-scanning `fold_ranges`
+    /// for every line.
+    fn hidden_intervals(&self) -> Vec<(usize, usize)> {
+        let mut hidden: Vec<(usize, usize)> = self
+            .folded
+            .iter()
+            .filter_map(|s| self.fold_ranges.get(s).map(|&e| (s + 1, e)))
+            .filter(|(s, e)| s <= e)
+            .collect();
+        hidden.sort_unstable();
+        hidden
+    }
+
     /// Get visible lines (skipping folded), returns Vec of actual line numbers
     pub fn visible_lines(&self, from: usize, count: usize) -> Vec<usize> {
         let lc = self.buffer.line_count();
-        let mut result = Vec::with_capacity(count);
-        let mut li = 0;
-        let mut skipped = 0;
-
-        // First skip to `from` visible lines
-        while li < lc && skipped < from {
-            if !self.is_line_folded(li) {
-                skipped += 1;
-            }
-            li += 1;
+        // Fast path: nothing is folded (the overwhelmingly common case), so the
+        // visible window is simply the contiguous run starting at `from`. The
+        // old code asked `is_line_folded` — itself O(fold_ranges) — for every
+        // line from 0 up to the viewport, which made scrolling deep into a large
+        // file quadratic *per frame*.
+        if self.folded.is_empty() {
+            let start = from.min(lc);
+            return (start..lc.min(start + count)).collect();
         }
 
-        // Then collect `count` visible lines
+        let hidden = self.hidden_intervals();
+        let mut result = Vec::with_capacity(count);
+        let mut li = 0usize;
+        let mut skipped = 0usize;
+        let mut hi = 0usize;
         while li < lc && result.len() < count {
-            if !self.is_line_folded(li) {
+            while hi < hidden.len() && hidden[hi].1 < li {
+                hi += 1;
+            }
+            if hi < hidden.len() && li >= hidden[hi].0 {
+                // Jump over the whole folded block in one step.
+                li = hidden[hi].1 + 1;
+                continue;
+            }
+            if skipped < from {
+                skipped += 1;
+            } else {
                 result.push(li);
             }
             li += 1;
@@ -1096,6 +1340,22 @@ mod tests {
         assert!(words.contains(&"foo".to_string()));
         assert!(words.contains(&"foo_bar".to_string()));
         assert!(!words.contains(&"bar".to_string()));
+    }
+
+    #[test]
+    fn collect_words_windowed_large_buffer() {
+        // Past the full-scan limit the scan is windowed around the cursor. It
+        // must still surface nearby words and must not panic at either edge.
+        let mut src = String::new();
+        for i in 0..8_000 {
+            src.push_str(&format!("let variable_{} = {};\n", i, i));
+        }
+        assert!(src.len() > 200_000, "fixture must exceed the full-scan limit");
+        let mut ed = editor_with_raw(&src);
+        ed.cursor.line = 0;
+        assert!(ed.collect_words("variable_1").iter().any(|w| w == "variable_10"));
+        ed.cursor.line = 7_999; // last line — window clamps at the end
+        assert!(!ed.collect_words("variable_7").is_empty());
     }
 
     #[test]
@@ -1268,6 +1528,96 @@ mod tests {
         assert!(ed.cursor.line < so + ed.viewport_height - 2);
     }
 
+    // ── Wheel scrolling ──
+
+    const ROW_H: f32 = 22.0;
+
+    #[test]
+    fn scroll_up_from_the_bottom_works() {
+        // Regression: once the last line reached the top of the viewport, the
+        // bottom clamp zeroed out *upward* movement too, so the wheel could
+        // never bring the earlier code back into view.
+        let mut ed = editor_with_raw(&"line\n".repeat(500));
+        let last = ed.line_count().saturating_sub(1);
+
+        // Drive it to the very bottom the way repeated wheel events would.
+        for _ in 0..200 {
+            ed.scroll_by_pixels(2_000.0, ROW_H);
+        }
+        assert_eq!(ed.scroll_offset.floor() as usize, last, "should pin at the last line");
+
+        // Now scroll back up.
+        ed.scroll_by_pixels(-500.0, ROW_H);
+        assert!(
+            (ed.scroll_offset as usize) < last,
+            "scrolling up from the bottom did not move (offset {})",
+            ed.scroll_offset
+        );
+
+        // And all the way back to the top.
+        for _ in 0..200 {
+            ed.scroll_by_pixels(-2_000.0, ROW_H);
+        }
+        assert_eq!(ed.scroll_offset, 0.0);
+    }
+
+    #[test]
+    fn scroll_round_trip_returns_to_start() {
+        let mut ed = editor_with_raw(&"line\n".repeat(500));
+        ed.scroll_by_pixels(1_000.0, ROW_H);
+        let down = ed.scroll_offset;
+        assert!(down > 0.0);
+        ed.scroll_by_pixels(-1_000.0, ROW_H);
+        assert!(ed.scroll_offset.abs() < 0.001, "expected 0, got {}", ed.scroll_offset);
+    }
+
+    #[test]
+    fn scroll_round_trip_with_word_wrap() {
+        // Wrapped lines are several rows tall; the walk must traverse them
+        // symmetrically in both directions.
+        let mut ed = editor_with_raw(&format!("{}\n", "x".repeat(25)).repeat(200));
+        ed.wrap_cols = 10; // each line is 3 visual rows
+        ed.scroll_by_pixels(1_000.0, ROW_H);
+        let down = ed.scroll_offset;
+        assert!(down > 0.0);
+        ed.scroll_by_pixels(-1_000.0, ROW_H);
+        assert!(ed.scroll_offset.abs() < 0.001, "expected 0, got {}", ed.scroll_offset);
+    }
+
+    #[test]
+    fn scroll_never_passes_the_ends() {
+        let mut ed = editor_with_raw(&"line\n".repeat(50));
+        let last = ed.line_count().saturating_sub(1);
+        ed.scroll_by_pixels(-10_000.0, ROW_H);
+        assert_eq!(ed.scroll_offset, 0.0, "scrolled above the first line");
+        ed.scroll_by_pixels(100_000.0, ROW_H);
+        assert!(
+            ed.scroll_offset >= last as f32 && ed.scroll_offset < last as f32 + 1.0,
+            "scrolled past the last line: {}",
+            ed.scroll_offset
+        );
+    }
+
+    #[test]
+    fn scroll_is_monotonic() {
+        // Every downward step must move forward (or stay pinned at the end),
+        // and every upward step backward — no oscillation between the carry
+        // loops.
+        let mut ed = editor_with_raw(&"line\n".repeat(300));
+        let mut prev = ed.scroll_offset;
+        for _ in 0..40 {
+            ed.scroll_by_pixels(60.0, ROW_H);
+            assert!(ed.scroll_offset >= prev, "went backwards while scrolling down");
+            prev = ed.scroll_offset;
+        }
+        for _ in 0..40 {
+            ed.scroll_by_pixels(-60.0, ROW_H);
+            assert!(ed.scroll_offset <= prev, "went forwards while scrolling up");
+            prev = ed.scroll_offset;
+        }
+        assert_eq!(ed.scroll_offset, 0.0);
+    }
+
     // ── Fold tests ──
 
     #[test]
@@ -1299,6 +1649,91 @@ mod tests {
         let mut ed = Editor::new();
         ed.buffer.rope = ropey::Rope::from_str(text);
         ed
+    }
+
+    // ── visible_lines / folding ──
+
+    #[test]
+    fn visible_lines_unfolded_is_contiguous() {
+        let ed = editor_with_raw(&"line\n".repeat(100));
+        assert_eq!(ed.visible_lines(10, 5), vec![10, 11, 12, 13, 14]);
+        // Asking past the end yields only what exists.
+        let tail = ed.visible_lines(99, 10);
+        assert!(tail.len() <= 2, "got {:?}", tail);
+    }
+
+    #[test]
+    fn visible_lines_skips_folded_block() {
+        let mut ed = editor_with_text("a {\nb\nc\n}\nd");
+        ed.compute_fold_ranges();
+        ed.toggle_fold(0); // hides lines 1..=3
+        assert_eq!(ed.visible_lines(0, 10), vec![0, 4]);
+        // `from` counts *visible* lines, so 1 starts at the line after the fold.
+        assert_eq!(ed.visible_lines(1, 10), vec![4]);
+    }
+
+    #[test]
+    fn visible_lines_matches_is_line_folded() {
+        let mut ed = editor_with_text("a {\nb\nc\n}\nx {\ny\n}\nz");
+        ed.compute_fold_ranges();
+        ed.toggle_fold(0);
+        ed.toggle_fold(4);
+        let expected: Vec<usize> = (0..ed.line_count()).filter(|&l| !ed.is_line_folded(l)).collect();
+        assert_eq!(ed.visible_lines(0, 100), expected);
+    }
+
+    // ── Undo coalescing ──
+
+    #[test]
+    fn coalesced_undo_still_restores() {
+        let mut ed = Editor::new();
+        ed.save_undo_snapshot();
+        // A typing burst: only the first call snapshots, the rest are coalesced.
+        for c in "hello".chars() {
+            ed.save_undo_snapshot_coalesced();
+            ed.insert_char(c);
+        }
+        assert_eq!(ed.buffer.get_line(0), "hello");
+        ed.undo();
+        assert_eq!(ed.buffer.text(), "");
+    }
+
+    // ── UTF-8 safety ──
+
+    #[test]
+    fn select_next_occurrence_handles_cyrillic() {
+        // Byte-vs-char confusion here used to panic on a multibyte line.
+        let mut ed = editor_with_text("привет мир\nпривет снова");
+        ed.cursor.line = 0;
+        ed.cursor.col = 0;
+        ed.select_word_at_cursor();
+        ed.select_next_occurrence();
+        assert_eq!(ed.cursor.line, 1);
+        assert_eq!(ed.cursor.col, 0);
+        let sel = ed.normalized_selection().unwrap();
+        assert_eq!(sel.end_col, 6); // "привет" = 6 characters
+    }
+
+    #[test]
+    fn duplicate_line_handles_cyrillic() {
+        let mut ed = editor_with_text("привет\nмир");
+        ed.cursor.line = 0;
+        ed.duplicate_line();
+        assert_eq!(ed.buffer.get_line(0), "привет");
+        assert_eq!(ed.buffer.get_line(1), "привет");
+        assert_eq!(ed.buffer.get_line(2), "мир");
+    }
+
+    #[test]
+    fn line_chars_matches_get_line() {
+        let ed = editor_with_raw("ascii\nкириллица\n\ttab\n");
+        for li in 0..ed.line_count() {
+            let via_iter: String = ed.buffer.line_chars(li).collect();
+            assert_eq!(via_iter, ed.buffer.get_line(li), "line {}", li);
+            let mut buf = Vec::new();
+            ed.buffer.line_chars_into(li, usize::MAX, &mut buf);
+            assert_eq!(buf.iter().collect::<String>(), ed.buffer.get_line(li));
+        }
     }
 
     #[test]

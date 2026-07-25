@@ -84,7 +84,7 @@ fn main() -> eframe::Result<()> {
         // Set initial visuals from loaded theme (resolve SystemDefault)
         let resolved = app.settings.theme.resolved();
         let tc = resolved.colors();
-        let mut visuals = if resolved == crate::settings::Theme::Light {
+        let mut visuals = if resolved.is_light() {
             egui::Visuals::light()
         } else {
             egui::Visuals::dark()

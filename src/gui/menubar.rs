@@ -76,7 +76,7 @@ impl CodeEditorApp {
                         ui.painter().rect_filled(
                             icon_rect,
                             CornerRadius::same(4),
-                            Color32::from_rgba_unmultiplied(255, 255, 255, 14),
+                            tc.hover_bg,
                         );
                     }
                     let inner = Rect::from_center_size(icon_rect.center(), Vec2::splat(14.0));
@@ -344,7 +344,7 @@ impl CodeEditorApp {
 
     pub(super) fn render_tabs(&mut self, ctx: &egui::Context) {
         let mut tab_to_close: Option<usize> = None;
-        let dark = self.app.settings.theme.resolved() != Theme::Light;
+        let dark = !self.app.settings.theme.is_light();
         egui::TopBottomPanel::top("tabs")
             .exact_height(36.0)
             .frame(egui::Frame::NONE.fill(self.tc.tab_bar_bg).inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 0 }))
@@ -362,7 +362,7 @@ impl CodeEditorApp {
                         let dirty = self.app.editors[i].is_dirty;
                         let active = i == self.app.active_editor;
                         let text_c = if active { self.tc.fg } else { self.tc.fg_dim };
-                        let bg = if active { self.tc.bg } else { Color32::TRANSPARENT };
+                        let bg = if active { self.tc.tab_active_bg } else { Color32::TRANSPARENT };
                         let rounding = CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 };
 
                         let frame = egui::Frame::NONE.fill(bg).corner_radius(rounding)
@@ -441,8 +441,7 @@ impl CodeEditorApp {
                                 // Red hover effect on close button
                                 if close_resp.hovered() {
                                     let cr = close_resp.rect;
-                                    ui.painter().rect_filled(cr, CornerRadius::same(3),
-                                        if dark { Color32::from_rgb(180, 50, 50) } else { Color32::from_rgb(220, 80, 80) });
+                                    ui.painter().rect_filled(cr, CornerRadius::same(3), self.tc.red);
                                     ui.painter().text(cr.center(), egui::Align2::CENTER_CENTER, "×",
                                         FontId::monospace(14.0), Color32::WHITE);
                                 }
@@ -452,15 +451,16 @@ impl CodeEditorApp {
                             });
                         });
 
-                        // Active tab accent underline
+                        // Active tab marker — IntelliJ New UI: a 2px accent rule
+                        // spanning the full tab, flush with the bottom of the strip.
                         if active {
                             let tab_rect = frame_resp.response.rect;
                             ui.painter().rect_filled(
                                 Rect::from_min_size(
-                                    Pos2::new(tab_rect.min.x + 2.0, tab_rect.max.y - 2.0),
-                                    Vec2::new(tab_rect.width() - 4.0, 2.0),
+                                    Pos2::new(tab_rect.min.x, panel_rect.max.y - 2.0),
+                                    Vec2::new(tab_rect.width(), 2.0),
                                 ),
-                                CornerRadius::same(1), self.tc.accent,
+                                CornerRadius::ZERO, self.tc.tab_underline,
                             );
                         }
                     }
@@ -473,16 +473,20 @@ impl CodeEditorApp {
 
     pub(super) fn render_status(&mut self, ctx: &egui::Context) {
         let tc = self.tc;
-        let dark = self.app.settings.theme.resolved() != Theme::Light;
         let status_bg = tc.status_bg;
-        let status_fg = if dark { tc.fg_dim } else { Color32::WHITE };
-        let status_accent = if dark { tc.fg } else { Color32::WHITE };
+        let status_fg = tc.status_fg;
+        let status_accent = tc.fg;
         let sf = FontId::monospace(11.5);
 
         egui::TopBottomPanel::bottom("status")
             .exact_height(26.0)
             .frame(egui::Frame::NONE.fill(status_bg).inner_margin(egui::Margin::symmetric(10, 3)))
             .show(ctx, |ui| {
+                let sr = ui.max_rect();
+                ui.painter().line_segment(
+                    [Pos2::new(sr.min.x - 10.0, sr.min.y - 3.0), Pos2::new(sr.max.x + 10.0, sr.min.y - 3.0)],
+                    Stroke::new(1.0, tc.border),
+                );
                 let ed = &self.app.editors[self.app.active_editor];
                 let lang = ed.file_path.as_ref().map(|p| syntax::detect_language(p)).unwrap_or("Text");
                 let line = ed.cursor.line + 1;
@@ -497,13 +501,11 @@ impl CodeEditorApp {
                         }
                     }
                     if dirty {
-                        ui.label(RichText::new("● Modified").font(sf.clone()).color(
-                            if dark { tc.orange } else { Color32::from_rgb(255, 220, 150) }
-                        ));
+                        ui.label(RichText::new("● Modified").font(sf.clone()).color(tc.orange));
                     }
                     let err_count = ed.diagnostics.len();
                     if err_count > 0 {
-                        let err_color = if dark { tc.red } else { Color32::from_rgb(255, 180, 180) };
+                        let err_color = tc.red;
                         ui.label(RichText::new(format!("⚠ {}", err_count)).font(sf.clone()).color(err_color));
                         // Show first diagnostic on the current line, if any
                         if let Some(diag) = ed.diagnostics.iter().find(|d| d.line == ed.cursor.line) {
@@ -542,9 +544,7 @@ impl CodeEditorApp {
                         ui.label(RichText::new(lang).font(sf.clone()).color(status_fg));
                         ui.label(RichText::new(format!("Ln {}, Col {}", line, col)).font(sf.clone()).color(status_accent));
                         if self.app.auto_save_enabled {
-                            ui.label(RichText::new("Auto-Save").font(sf.clone()).color(
-                                if dark { tc.green } else { Color32::from_rgb(180, 255, 180) }
-                            ));
+                            ui.label(RichText::new("Auto-Save").font(sf.clone()).color(tc.green));
                         }
                     });
                 });

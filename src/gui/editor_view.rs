@@ -10,11 +10,12 @@ fn compute_bracket_depths(app: &crate::app::App, vis_lines: &[usize]) -> std::co
     let mut in_string = false;
     let mut string_char = '"';
 
-    // Only scan visible lines (not from line 0!)
+    // Only scan visible lines (not from line 0!). Characters come straight off
+    // the rope — `get_line()` here allocated a String per visible line on every
+    // single frame.
     for &li in vis_lines {
-        let line = ed.buffer.get_line(li);
         let mut prev = '\0';
-        for (ci, ch) in line.chars().enumerate() {
+        for (ci, ch) in ed.buffer.line_chars(li).enumerate() {
             if in_string {
                 if ch == string_char && prev != '\\' { in_string = false; }
             } else {
@@ -46,12 +47,18 @@ use crate::wrap::compute_wrap_starts;
 
 /// Number of visual rows a logical line occupies under the given wrap width.
 /// Always ≥ 1. Reuses `scratch` to avoid a persistent allocation.
-fn seg_count(ed: &crate::editor::Editor, line: usize, wrap_cols: usize, scratch: &mut Vec<usize>) -> usize {
+fn seg_count(
+    ed: &crate::editor::Editor,
+    line: usize,
+    wrap_cols: usize,
+    chars: &mut Vec<char>,
+    scratch: &mut Vec<usize>,
+) -> usize {
     if wrap_cols == usize::MAX {
         return 1;
     }
-    let chars: Vec<char> = ed.buffer.get_line(line).chars().take(MAX_LINE_LEN).collect();
-    compute_wrap_starts(&chars, wrap_cols, scratch);
+    ed.buffer.line_chars_into(line, MAX_LINE_LEN, chars);
+    compute_wrap_starts(chars, wrap_cols, scratch);
     scratch.len()
 }
 
@@ -69,6 +76,7 @@ fn seg_xy(starts: &[usize], col: usize, xs: f32, base_y: f32, cw: f32, lh: f32) 
 /// Map a click at visual `row_idx` (counted from `start_line`'s first row) and
 /// horizontal pixel `rel_x` back to a logical `(line, col)`, accounting for soft
 /// wrap. `scratch` is reused for wrap computation to avoid per-call allocation.
+#[allow(clippy::too_many_arguments)]
 fn point_to_line_col(
     ed: &crate::editor::Editor,
     start_line: usize,
@@ -83,9 +91,9 @@ fn point_to_line_col(
     let within = ((rel_x - gw).max(0.0) / cw) as usize;
     let mut acc = 0usize;
     let mut line = start_line.min(lc.saturating_sub(1));
+    let mut chars: Vec<char> = Vec::new();
     loop {
-        let text = ed.buffer.get_line(line);
-        let chars: Vec<char> = text.chars().take(MAX_LINE_LEN).collect();
+        ed.buffer.line_chars_into(line, MAX_LINE_LEN, &mut chars);
         compute_wrap_starts(&chars, wrap_cols, scratch);
         let n_seg = scratch.len();
         if row_idx < acc + n_seg {
@@ -102,13 +110,19 @@ fn point_to_line_col(
     }
 }
 
+/// How many lines the bracket matcher will scan before giving up. Runs every
+/// frame while the caret sits on a bracket, so an *unmatched* bracket must not
+/// cost a full-file scan on each repaint.
+const BRACKET_SCAN_LINES: usize = 5_000;
+
+/// Quiet period after the last keystroke before the whole-buffer analysis pass
+/// (syntect + folds + diagnostics) is kicked off.
+const ANALYSIS_DEBOUNCE_MS: u128 = 120;
+
 /// Find matching bracket position for bracket at (line, col)
 fn find_matching_bracket(app: &crate::app::App, line: usize, col: usize) -> Option<(usize, usize)> {
     let ed = &app.editors[app.active_editor];
-    let text = ed.buffer.get_line(line);
-    let chars: Vec<char> = text.chars().collect();
-    if col >= chars.len() { return None; }
-    let ch = chars[col];
+    let ch = ed.buffer.line_chars(line).nth(col)?;
     let (target, forward) = match ch {
         '(' => (')', true), ')' => ('(', false),
         '[' => (']', true), ']' => ('[', false),
@@ -117,38 +131,39 @@ fn find_matching_bracket(app: &crate::app::App, line: usize, col: usize) -> Opti
     };
     let mut depth = 0i32;
     let lc = ed.line_count();
+    // Reused across lines instead of a fresh `Vec<char>` (plus a `String` from
+    // `get_line`) for every line touched by the scan.
+    let mut lchars: Vec<char> = Vec::new();
     if forward {
         let mut l = line;
         let mut c = col;
-        loop {
-            let ln = ed.buffer.get_line(l);
-            let lchars: Vec<char> = ln.chars().collect();
+        let stop = (line + BRACKET_SCAN_LINES).min(lc);
+        while l < stop {
+            ed.buffer.line_chars_into(l, usize::MAX, &mut lchars);
             while c < lchars.len() {
                 if lchars[c] == ch { depth += 1; }
                 else if lchars[c] == target { depth -= 1; if depth == 0 { return Some((l, c)); } }
                 c += 1;
             }
             l += 1; c = 0;
-            if l >= lc { break; }
         }
     } else {
         let mut l = line as isize;
         let mut c = col as isize;
-        loop {
-            let ln = ed.buffer.get_line(l as usize);
-            let lchars: Vec<char> = ln.chars().collect();
+        let stop = line.saturating_sub(BRACKET_SCAN_LINES) as isize;
+        while l >= stop {
+            ed.buffer.line_chars_into(l as usize, usize::MAX, &mut lchars);
+            if c < 0 || c as usize >= lchars.len() {
+                c = lchars.len() as isize - 1;
+            }
             while c >= 0 {
                 let cu = c as usize;
-                if cu < lchars.len() {
-                    if lchars[cu] == ch { depth += 1; }
-                    else if lchars[cu] == target { depth -= 1; if depth == 0 { return Some((l as usize, cu)); } }
-                }
+                if lchars[cu] == ch { depth += 1; }
+                else if lchars[cu] == target { depth -= 1; if depth == 0 { return Some((l as usize, cu)); } }
                 c -= 1;
             }
             l -= 1;
-            if l < 0 { break; }
-            let prev_len = ed.buffer.get_line(l as usize).chars().count();
-            c = prev_len as isize - 1;
+            c = -1; // "start from the end of the previous line"
         }
     }
     None
@@ -234,7 +249,11 @@ impl CodeEditorApp {
                     let vis_lines = ed.visible_lines(ed.scroll_offset as usize, vis + 2);
                     let gutter_digits = format!("{}", ed.line_count()).len().max(3);
                     let gw = cw * (gutter_digits as f32 + 2.0);
-                    let dark = self.app.settings.theme.resolved() != Theme::Light;
+                    let dark = !self.app.settings.theme.is_light();
+                    let no_depths = std::collections::HashMap::new();
+                    let mut colors: Vec<Color32> = Vec::new();
+                    let mut byte_offsets: Vec<usize> = Vec::new();
+                    let mut chars: Vec<char> = Vec::new();
 
                     for (row, &li) in vis_lines.iter().enumerate() {
                         let y = rect.min.y + row as f32 * lh;
@@ -248,12 +267,12 @@ impl CodeEditorApp {
                             small_sized(fs), nc,
                         );
                         // Text
-                        let line = ed.buffer.get_line(li);
                         let hls = if li < ed.highlight_cache.len() { &ed.highlight_cache[li] } else { &[] as &[syntax::HighlightSpan] };
-                        let chars: Vec<char> = line.chars().take(MAX_LINE_LEN).collect();
+                        ed.buffer.line_chars_into(li, MAX_LINE_LEN, &mut chars);
                         let xs = rect.min.x + gw;
                         let seg_end = chars.len();
-                        self.render_line_text(&painter, &chars, hls, &std::collections::HashMap::new(), li, 0, seg_end, xs, y + LINE_SPACING / 2.0, &font, dark);
+                        self.compute_line_colors(&chars, hls, &no_depths, li, dark, &mut colors, &mut byte_offsets);
+                        self.paint_line_segment(&painter, &chars, &colors, 0, seg_end, xs, y + LINE_SPACING / 2.0, &font, cw);
                     }
                 });
         }
@@ -274,7 +293,7 @@ impl CodeEditorApp {
                 self.render_breadcrumbs(ui);
             }
 
-            let dark = self.app.settings.theme.resolved() != Theme::Light;
+            let dark = !self.app.settings.theme.is_light();
             let fs = self.app.settings.font_size;
             let font = mono_sized(fs);
             let sfont = small_sized(fs);
@@ -282,33 +301,18 @@ impl CodeEditorApp {
             let lh = ui.fonts(|f| f.row_height(&font)) + LINE_SPACING;
             let show_ln = self.app.settings.show_line_numbers;
 
-            // Diagnostics (bracket/string checking) — deferred until 1s after the
-            // last user input so it never runs on the frame a file is opened or
-            // while the user is typing/clicking. Folds are no longer computed here;
-            // they come from the async analysis worker below. `check_syntax` is
-            // O(n) but only fires once the user has paused.
+            // Whole-buffer analysis — syntect highlighting, fold ranges AND syntax
+            // diagnostics — runs ASYNCHRONOUSLY. Syntect is stateful (multi-line
+            // strings etc.) so the buffer is parsed in one pass, which can take
+            // 100s of ms on big files; `check_syntax` is another full pass. Neither
+            // belongs on the UI thread, so a worker produces all three and we
+            // install them when ready. Until then the editor paints as plain text
+            // (no freeze on open or while typing). Bursts are coalesced via the
+            // generation counter *and* debounced, so holding a key down doesn't
+            // clone + re-parse the whole file once per character.
             {
-                let idle_enough = self.last_input_time.elapsed().as_millis() > 1000;
-                let ed = &mut self.app.editors[self.app.active_editor];
-                if ed.diagnostics_dirty && idle_enough {
-                    let content = ed.buffer.text();
-                    let first_line = content.lines().next().unwrap_or("");
-                    let lang_for_diag = ed.file_path.as_ref()
-                        .map(|p| syntax::detect_language_with_first_line(p, first_line).to_string())
-                        .unwrap_or("text".into());
-                    ed.diagnostics = syntax::check_syntax(&content, &lang_for_diag);
-                    ed.diagnostics_dirty = false;
-                }
-            }
-
-            // Update syntax highlight cache ASYNCHRONOUSLY. Syntect is stateful
-            // (multi-line strings etc.) so the whole buffer is parsed in one pass,
-            // which can take 100s of ms on big files — too slow for the UI thread.
-            // Instead a worker thread produces the cache and we install it when
-            // ready. Until then the editor paints as plain text (no freeze on open
-            // or while typing). Bursts are coalesced via the generation counter.
-            {
-                let dark = self.app.settings.theme.resolved() != Theme::Light;
+                let syntax_theme = self.app.settings.theme.syntax_theme();
+                let idle_ms = self.last_input_time.elapsed().as_millis();
                 let ed = &mut self.app.editors[self.app.active_editor];
                 let lc = ed.line_count();
 
@@ -325,46 +329,54 @@ impl CodeEditorApp {
                 // into each span, so stale colors would be painted on the new bg.
                 // The length mismatch is the safety net for edits that change the
                 // line count without invalidating (paste, undo/redo).
-                let theme_changed = ed.highlight_cache_dark != Some(dark);
-                let stale = first_load || edited || theme_changed || ed.highlight_cache.len() != lc;
+                let theme_changed = ed.highlight_cache_theme != Some(syntax_theme);
+                let stale = first_load || edited || theme_changed
+                    || ed.highlight_cache.len() != lc || ed.diagnostics_dirty;
                 // Bump only when we currently believe we're up to date — otherwise a
                 // persistent (level-triggered) mismatch would bump every frame and
                 // every in-flight result would be discarded as stale forever.
                 if stale && ed.highlight_applied_gen == ed.highlight_gen {
-                    ed.highlight_gen += 1; // a newer cache is wanted
-                    ed.highlight_cache_dark = Some(dark);
-                    // Consume the dirty marker only now that we're acting on it, so
+                    ed.highlight_gen += 1; // a newer analysis is wanted
+                    ed.highlight_cache_theme = Some(syntax_theme);
+                    // Consume the dirty markers only now that we're acting on them, so
                     // edits during an in-flight pass aren't lost — they keep the
-                    // marker set and trigger a fresh pass once this one settles.
+                    // markers set and trigger a fresh pass once this one settles.
                     ed.highlight_dirty_from = None;
+                    ed.diagnostics_dirty = false;
                 }
 
                 // Install a finished worker result (newest gen only; drop stale).
                 if let Some(rx) = &ed.highlight_rx {
-                    if let Ok((g, cache, folds)) = rx.try_recv() {
-                        if g == ed.highlight_gen {
-                            ed.highlight_cache = cache;
+                    if let Ok(res) = rx.try_recv() {
+                        if res.generation == ed.highlight_gen {
+                            ed.highlight_cache = res.highlights;
                             if ed.highlight_cache.len() != lc {
                                 ed.highlight_cache.resize(lc, Vec::new());
                             }
-                            ed.fold_ranges = folds;
+                            ed.fold_ranges = res.folds;
                             ed.fold_ranges_computed = true;
-                            ed.highlight_applied_gen = g;
+                            ed.diagnostics = res.diagnostics;
+                            ed.highlight_applied_gen = res.generation;
                         }
                         ed.highlight_rx = None;
                     }
                 }
 
-                // No worker running and the shown cache is out of date → spawn one.
-                // It produces both the highlight cache and the fold ranges so neither
-                // O(n) pass runs on the UI thread on open.
-                if ed.highlight_rx.is_none() && ed.highlight_applied_gen != ed.highlight_gen {
+                // No worker running and the shown state is out of date → spawn one,
+                // but only once typing has paused for a moment. Each pass copies the
+                // whole buffer out of the rope, so spawning per keystroke turned
+                // every character into an O(file) memcpy plus a thread launch.
+                let pending = ed.highlight_applied_gen != ed.highlight_gen;
+                let ready = first_load
+                    || ed.highlight_cache.is_empty()
+                    || idle_ms >= ANALYSIS_DEBOUNCE_MS;
+                if ed.highlight_rx.is_none() && pending && ready {
                     let content = ed.buffer.text();
                     let lang = ed.highlight_cache_lang.clone();
-                    let gen = ed.highlight_gen;
+                    let generation = ed.highlight_gen;
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || {
-                        let cache = crate::syntect_engine::highlight_buffer(&content, &lang, dark)
+                        let highlights = crate::syntect_engine::highlight_buffer(&content, &lang, syntax_theme)
                             .unwrap_or_else(|| {
                                 // Fallback: per-line keyword highlighter for languages
                                 // syntect doesn't bundle (or when its parser bails out).
@@ -373,15 +385,23 @@ impl CodeEditorApp {
                                     .collect()
                             });
                         let folds = crate::editor::compute_folds(&content);
-                        let _ = tx.send((gen, cache, folds));
+                        let diagnostics = crate::syntax::check_syntax(&content, &lang);
+                        let _ = tx.send(crate::editor::AnalysisResult {
+                            generation, highlights, folds, diagnostics,
+                        });
                     });
                     ed.highlight_rx = Some(rx);
                 }
 
-                // Keep repainting while a highlight is in flight so the result is
-                // polled and shown promptly (egui otherwise idles between events).
+                // Keep repainting while analysis is in flight (or waiting on the
+                // debounce) so the result is polled and shown promptly — egui
+                // otherwise idles between input events.
                 if ed.highlight_rx.is_some() {
                     ctx.request_repaint();
+                } else if pending {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(
+                        ANALYSIS_DEBOUNCE_MS as u64,
+                    ));
                 }
             }
 
@@ -433,7 +453,9 @@ impl CodeEditorApp {
                     match event {
                         egui::Event::Text(text) => {
                             let ed = &mut self.app.editors[self.app.active_editor];
-                            ed.save_undo_snapshot();
+                            // Coalesced: one undo step per typing burst instead of a
+                            // full-buffer snapshot for every character typed.
+                            ed.save_undo_snapshot_coalesced();
                             // Auto-surround selection (Zed: wrap selection with brackets)
                             if ed.selection.is_some() {
                                 let wrap_pair = match text.as_str() {
@@ -627,8 +649,9 @@ impl CodeEditorApp {
             } else {
                 usize::MAX
             };
-            // Scratch buffer reused by click→(line,col) mapping (no per-event alloc).
+            // Scratch buffers reused by click→(line,col) mapping (no per-event alloc).
             let mut click_scratch: Vec<usize> = Vec::new();
+            let mut click_chars: Vec<char> = Vec::new();
 
             // Sub-pixel-aware row mapping for click positions. The fractional
             // scroll is a fraction *through the top line's wrapped block*, so the
@@ -636,7 +659,8 @@ impl CodeEditorApp {
             let ed_scroll = self.app.editors[self.app.active_editor].scroll_offset;
             let click_so = ed_scroll.floor().max(0.0) as usize;
             let click_top_segs = seg_count(
-                &self.app.editors[self.app.active_editor], click_so, wrap_cols, &mut click_scratch,
+                &self.app.editors[self.app.active_editor], click_so, wrap_cols,
+                &mut click_chars, &mut click_scratch,
             );
             let click_pixel_offset = (ed_scroll - click_so as f32) * click_top_segs as f32 * lh;
             let rel_to_row = |rel_y: f32| -> usize {
@@ -806,33 +830,10 @@ impl CodeEditorApp {
                     let ed = &mut self.app.editors[self.app.active_editor];
                     // Smooth scroll measured in pixels, carried across lines of
                     // *variable* visual height (wrapped lines are taller). The
-                    // fractional scroll is a fraction through the top line's block,
-                    // so a tall wrapped line is traversed row-by-row, never skipped.
-                    let last = lc.saturating_sub(1);
-                    let mut line = ed.scroll_offset.floor().max(0.0) as usize;
-                    let frac = (ed.scroll_offset - line as f32).clamp(0.0, 1.0);
-                    let line_h = |l: usize, s: &mut Vec<usize>| seg_count(ed, l, wrap_cols, s) as f32 * lh;
-                    let mut scratch: Vec<usize> = Vec::new();
-                    // Pixels into the top line's block, then move by -sd (down = +).
-                    let mut within = frac * line_h(line, &mut scratch) - sd;
-                    // Carry downward through full lines.
-                    loop {
-                        let h = line_h(line, &mut scratch);
-                        if within < h || line >= last {
-                            if line >= last { within = within.min(h - 1.0).max(0.0); }
-                            break;
-                        }
-                        within -= h;
-                        line += 1;
-                    }
-                    // Carry upward.
-                    while within < 0.0 && line > 0 {
-                        line -= 1;
-                        within += line_h(line, &mut scratch);
-                    }
-                    let h = line_h(line, &mut scratch).max(lh);
-                    let new_frac = (within / h).clamp(0.0, 0.9999);
-                    ed.scroll_offset = line as f32 + new_frac;
+                    // walk itself lives on `Editor` so it can be tested without
+                    // a window; `wrap_cols` was pushed in earlier this frame.
+                    ed.wrap_cols = wrap_cols;
+                    ed.scroll_by_pixels(-sd, lh);
                 }
                 // Force continuous repaint during scroll inertia — without this, egui only
                 // repaints on raw input events, dropping FPS while smooth_scroll_delta decays.
@@ -852,7 +853,8 @@ impl CodeEditorApp {
             // top line scrolls smoothly row-by-row instead of jumping.
             let so = ed.scroll_offset.floor().max(0.0) as usize;
             let mut so_scratch: Vec<usize> = Vec::new();
-            let top_segs = seg_count(ed, so, wrap_cols, &mut so_scratch);
+            let mut so_chars: Vec<char> = Vec::new();
+            let top_segs = seg_count(ed, so, wrap_cols, &mut so_chars, &mut so_scratch);
             let pixel_offset = (ed.scroll_offset - so as f32) * top_segs as f32 * lh;
             let text_y_offset = LINE_SPACING / 2.0;
 
@@ -884,6 +886,13 @@ impl CodeEditorApp {
             // scrolls within the first row. `wrap_starts` is reused every line.
             let mut y = rect.min.y - pixel_offset;
             let mut wrap_starts: Vec<usize> = Vec::with_capacity(8);
+            // Per-line scratch, reused across the whole viewport: the character
+            // buffer, its colour map and the char→byte index used to place
+            // highlight spans. Previously each of these was a fresh allocation
+            // per line (and the colour map per *segment*) on every frame.
+            let mut chars: Vec<char> = Vec::with_capacity(MAX_LINE_LEN);
+            let mut line_colors: Vec<Color32> = Vec::with_capacity(MAX_LINE_LEN);
+            let mut byte_offsets: Vec<usize> = Vec::with_capacity(MAX_LINE_LEN + 1);
             let error_color = Color32::from_rgb(247, 118, 142);
 
             // Captured during the loop for post-loop drawing (caret/blame/extras).
@@ -894,14 +903,10 @@ impl CodeEditorApp {
             for &li in vis_lines.iter() {
                 if y > rect.max.y { break; }
 
-                // Line content — single alloc per line.
-                let line = ed.buffer.get_line(li);
+                // Line content — read straight into the reused scratch buffer,
+                // no String and no per-line Vec allocation.
                 let hls = if li < ed.highlight_cache.len() { &ed.highlight_cache[li] } else { &[] as &[syntax::HighlightSpan] };
-                let chars: Vec<char> = if line.len() > MAX_LINE_LEN {
-                    line.chars().take(MAX_LINE_LEN).collect()
-                } else {
-                    line.chars().collect()
-                };
+                ed.buffer.line_chars_into(li, MAX_LINE_LEN, &mut chars);
                 let line_len = chars.len();
 
                 compute_wrap_starts(&chars, wrap_cols, &mut wrap_starts);
@@ -961,7 +966,7 @@ impl CodeEditorApp {
                             painter.rect_filled(
                                 Rect::from_min_size(Pos2::new(line_end_x, ley + 2.0),
                                     Vec2::new(cw * 6.0, lh - 4.0)),
-                                CornerRadius::same(3), if dark { Color32::from_rgb(40, 44, 65) } else { Color32::from_rgb(228, 228, 228) });
+                                CornerRadius::same(3), self.tc.folded_bg);
                             ln_buf.clear();
                             let _ = write!(ln_buf, "⋯ {}", folded_count);
                             painter.text(Pos2::new(line_end_x + cw * 0.5, ley + text_y_offset), egui::Align2::LEFT_TOP,
@@ -1043,18 +1048,22 @@ impl CodeEditorApp {
                         let gx = xs + g as f32 * cw;
                         painter.line_segment(
                             [Pos2::new(gx, y), Pos2::new(gx, y + block_h)],
-                            Stroke::new(1.0, if dark { Color32::from_rgb(57, 57, 57) } else { Color32::from_rgb(228, 228, 228) }),
+                            Stroke::new(1.0, self.tc.indent_guide),
                         );
                     }
                 }
 
-                // Render text with syntax highlighting + rainbow brackets — one
-                // paint per wrapped segment, each starting back at the left margin.
-                for sidx in 0..n_seg {
-                    let s = wrap_starts[sidx];
-                    let e = if sidx + 1 < n_seg { wrap_starts[sidx + 1] } else { line_len };
-                    let seg_y = y + sidx as f32 * lh + text_y_offset;
-                    self.render_line_text(&painter, &chars, &hls, &bracket_depths, li, s, e, xs, seg_y, &font, dark);
+                // Render text with syntax highlighting + rainbow brackets — the
+                // colour map is built once for the logical line, then one paint
+                // per wrapped segment, each starting back at the left margin.
+                if line_len > 0 {
+                    self.compute_line_colors(&chars, hls, &bracket_depths, li, dark, &mut line_colors, &mut byte_offsets);
+                    for sidx in 0..n_seg {
+                        let s = wrap_starts[sidx];
+                        let e = if sidx + 1 < n_seg { wrap_starts[sidx + 1] } else { line_len };
+                        let seg_y = y + sidx as f32 * lh + text_y_offset;
+                        self.paint_line_segment(&painter, &chars, &line_colors, s, e, xs, seg_y, &font, cw);
+                    }
                 }
 
                 // Error underlines (drawn on the row that holds the diagnostic start)
@@ -1183,12 +1192,12 @@ impl CodeEditorApp {
                 // Track background
                 painter.rect_filled(
                     Rect::from_min_size(Pos2::new(rect.max.x - SCROLLBAR_WIDTH, rect.min.y), Vec2::new(SCROLLBAR_WIDTH, rect.height())),
-                    CornerRadius::ZERO, if dark { Color32::from_rgba_premultiplied(30, 33, 40, 80) } else { Color32::from_rgba_premultiplied(0, 0, 0, 10) },
+                    CornerRadius::ZERO, self.tc.scrollbar_track,
                 );
                 // Thumb
                 painter.rect_filled(
                     Rect::from_min_size(Pos2::new(rect.max.x - SCROLLBAR_WIDTH + 2.0, sb_y), Vec2::new(SCROLLBAR_WIDTH - 4.0, sb_h)),
-                    CornerRadius::same(4), if dark { Color32::from_rgba_premultiplied(150, 160, 180, 100) } else { Color32::from_rgba_premultiplied(0, 0, 0, 60) },
+                    CornerRadius::same(4), self.tc.scrollbar_thumb,
                 );
             }
 
@@ -1218,58 +1227,84 @@ impl CodeEditorApp {
         });
     }
 
-    /// Render the wrapped segment `chars[seg_start..seg_end]` of a logical line.
-    /// Highlight colours and rainbow-bracket depths are computed over absolute
-    /// column indices, but the segment is drawn starting at the left margin `xs`
-    /// (column `seg_start` maps to `xs`). With wrap off the caller passes
-    /// `seg_start = 0`, `seg_end = chars.len()`, reproducing the old full-line draw.
-    fn render_line_text(
+    /// Build the per-character colour map for one logical line: syntax highlight
+    /// spans first, then rainbow-bracket overrides.
+    ///
+    /// Computed **once per line** and shared by every wrapped segment of it, and
+    /// written into caller-owned scratch buffers. The previous version rebuilt a
+    /// freshly allocated map for each segment, and translated each span's byte
+    /// range to char indices by re-walking the line from character zero — so a
+    /// densely highlighted line was O(spans × line length) per segment per frame.
+    fn compute_line_colors(
         &self,
-        painter: &egui::Painter,
         chars: &[char],
         hls: &[syntax::HighlightSpan],
         bracket_depths: &std::collections::HashMap<(usize, usize), usize>,
         li: usize,
+        dark: bool,
+        colors: &mut Vec<Color32>,
+        byte_offsets: &mut Vec<usize>,
+    ) {
+        let len = chars.len();
+        colors.clear();
+        colors.resize(len, self.tc.fg);
+        if len == 0 { return; }
+
+        if !hls.is_empty() {
+            // char index → byte offset, built in one pass (len + 1 entries).
+            byte_offsets.clear();
+            byte_offsets.reserve(len + 1);
+            let mut byte = 0usize;
+            for ch in chars {
+                byte_offsets.push(byte);
+                byte += ch.len_utf8();
+            }
+            byte_offsets.push(byte);
+
+            // Spans are byte ranges; binary-search their char bounds. Applied in
+            // order so a later span still wins over an earlier overlapping one,
+            // matching the original behaviour.
+            for hl in hls {
+                let cs = byte_offsets.partition_point(|&o| o < hl.start).min(len);
+                let ce = byte_offsets.partition_point(|&o| o < hl.end).min(len);
+                if cs >= ce { continue; }
+                let c = hl.override_color.unwrap_or_else(|| hl.kind.color(dark));
+                for slot in &mut colors[cs..ce] {
+                    *slot = c;
+                }
+            }
+        }
+
+        // Override bracket colors (rainbow)
+        if !bracket_depths.is_empty() {
+            for (ci, &ch) in chars.iter().enumerate() {
+                if matches!(ch, '(' | ')' | '[' | ']' | '{' | '}') {
+                    if let Some(&depth) = bracket_depths.get(&(li, ci)) {
+                        colors[ci] = self.tc.bracket_colors[depth % self.tc.bracket_colors.len()];
+                    }
+                }
+            }
+        }
+    }
+
+    /// Paint the wrapped segment `chars[seg_start..seg_end]` using a colour map
+    /// from `compute_line_colors`. The segment is drawn starting at the left
+    /// margin `xs` (column `seg_start` maps to `xs`), batching runs of equal
+    /// colour into a single text draw.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_line_segment(
+        &self,
+        painter: &egui::Painter,
+        chars: &[char],
+        colors: &[Color32],
         seg_start: usize,
         seg_end: usize,
         xs: f32,
         y: f32,
         font: &FontId,
-        dark: bool,
+        cw: f32,
     ) {
-        if chars.is_empty() { return; }
-        let cw = painter.fonts(|f| f.glyph_width(font, ' '));
-
-        // Build per-char color map
-        let len = chars.len();
-        let mut colors = vec![self.tc.fg; len];
-
-        // Apply syntax highlight colors — syntect populates override_color from its theme,
-        // the legacy keyword highlighter leaves it None and we fall back to kind.color(dark).
-        for hl in hls {
-            let start = hl.start.min(len);
-            let end = hl.end.min(len);
-            let c = hl.override_color.unwrap_or_else(|| hl.kind.color(dark));
-            // colors[] is indexed by char position, but spans are byte ranges. Translate.
-            let mut byte = 0usize;
-            for (ci, ch) in chars.iter().enumerate() {
-                if byte >= end { break; }
-                if byte >= start { colors[ci] = c; }
-                byte += ch.len_utf8();
-            }
-        }
-
-        // Override bracket colors (rainbow)
-        for (ci, &ch) in chars.iter().enumerate() {
-            if "()[]{}".contains(ch) {
-                if let Some(&depth) = bracket_depths.get(&(li, ci)) {
-                    colors[ci] = self.tc.bracket_colors[depth % self.tc.bracket_colors.len()];
-                }
-            }
-        }
-
-        // Render in batched spans of same color — much faster than per-char.
-        // Only the requested segment is drawn, shifted so it starts at `xs`.
+        let len = chars.len().min(colors.len());
         let lo = seg_start.min(len);
         let hi = seg_end.min(len);
         let mut span_start = lo;
@@ -1292,34 +1327,17 @@ impl CodeEditorApp {
     }
 
     fn render_welcome(&mut self, ui: &mut egui::Ui) {
-        let resolved = self.app.settings.theme.resolved();
-        let dark = resolved != Theme::Light;
         let tc = self.tc;
         let mut open_project: Option<String> = None;
         let mut remove_project: Option<String> = None;
         let mut clear_all_projects = false;
 
-        // Visual constants (Ferrite welcome).
-        let card_bg = if dark {
-            Color32::from_rgb(0x11, 0x14, 0x1d)
-        } else {
-            Color32::from_rgb(0xee, 0xf0, 0xf4)
-        };
-        let card_bg_hover = if dark {
-            Color32::from_rgb(0x18, 0x1c, 0x28)
-        } else {
-            Color32::from_rgb(0xe3, 0xe6, 0xed)
-        };
-        let card_border = if dark {
-            Color32::from_rgb(0x1c, 0x22, 0x33)
-        } else {
-            Color32::from_rgb(0xd6, 0xda, 0xe2)
-        };
-        let badge_bg = if dark {
-            Color32::from_rgb(0x13, 0x17, 0x22)
-        } else {
-            Color32::from_rgb(0xe9, 0xeb, 0xf0)
-        };
+        // Visual constants — owned by the theme so every palette gets cards that
+        // sit correctly on its own background.
+        let card_bg = tc.card_bg;
+        let card_bg_hover = tc.card_bg_hover;
+        let card_border = tc.border;
+        let badge_bg = tc.card_bg;
 
         let avail_w = ui.available_width();
         let content_w = 920.0_f32.min(avail_w - 80.0);
@@ -1440,7 +1458,7 @@ impl CodeEditorApp {
                                 ui.painter().rect_filled(
                                     row_rect,
                                     CornerRadius::same(6),
-                                    Color32::from_rgba_unmultiplied(255, 255, 255, 10),
+                                    tc.hover_bg,
                                 );
                             }
                             if row_resp.clicked() {
@@ -1657,7 +1675,7 @@ impl CodeEditorApp {
             let root = self.app.file_tree.root_path.as_deref().unwrap_or("");
             let rel = fp.strip_prefix(root).unwrap_or(fp).trim_start_matches('/');
             let parts: Vec<&str> = rel.split('/').collect();
-            let dark = self.app.settings.theme.resolved() != Theme::Light;
+            let dark = !self.app.settings.theme.is_light();
             let bc_bg = if dark { Color32::from_rgb(32, 33, 40) } else { Color32::from_rgb(240, 240, 242) };
             let bc_h = 26.0;
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), bc_h), egui::Sense::hover());
@@ -1713,21 +1731,26 @@ impl CodeEditorApp {
         let mini_line_h: f32 = 2.0;
         let total_mini_h = mini_line_h * lc as f32;
         let minimap_scroll_offset: f32 = if total_mini_h > rect.height() {
-            let scroll_ratio = so as f32 / (lc as f32 - vis as f32).max(1.0);
+            // Clamped: the editor scrolls until the *last* line sits at the top,
+            // so `so` reaches `lc - 1` while this ratio saturates at `lc - vis`.
+            // Unclamped, the minimap slid past the end of the file near the
+            // bottom and stopped lining up with the editor.
+            let scroll_ratio = (so as f32 / (lc as f32 - vis as f32).max(1.0)).clamp(0.0, 1.0);
             scroll_ratio * (total_mini_h - rect.height())
         } else {
             0.0
         };
 
-        // Cap draw calls to ~(viewport_height / mini_line_h) — anything denser is wasted pixels.
-        // For a 800px viewport that's 400 lines max regardless of file size, dropping a 2000-line
-        // file from 2000 to 400 rect_filled calls per frame.
-        let max_draws = ((rect.height() / mini_line_h) as usize).max(50);
-        let step = (lc / max_draws).max(1);
-        for li in (0..lc).step_by(step) {
+        // Draw only the slice of the file that lands inside the minimap — the
+        // draw count is bounded by the panel height (~400 bars for an 800px
+        // viewport) no matter how big the file is. The previous version stepped
+        // over the *whole* file (`step = lc / max_draws`) to hit that same cap,
+        // which skipped lines and left the minimap visibly sparse as soon as it
+        // started scrolling.
+        let first_line = (minimap_scroll_offset / mini_line_h) as usize;
+        let rows = (rect.height() / mini_line_h).ceil() as usize + 1;
+        for li in first_line..(first_line + rows).min(lc) {
             let my = rect.min.y + li as f32 * mini_line_h - minimap_scroll_offset;
-            if my < rect.min.y - 2.0 { continue; }
-            if my > rect.max.y { break; }
 
             // Use rope line length directly to avoid String allocation
             let line_char_len = ed.buffer.line_len(li);
@@ -1768,20 +1791,12 @@ impl CodeEditorApp {
         // Viewport indicator
         let vp_y = rect.min.y + so as f32 * mini_line_h - minimap_scroll_offset;
         let vp_h = (vis as f32 * mini_line_h).max(10.0);
-        let vp_color = if dark {
-            Color32::from_rgba_premultiplied(122, 162, 247, 30)
-        } else {
-            Color32::from_rgba_premultiplied(55, 125, 207, 25)
-        };
+        let vp_color = self.tc.minimap_viewport_bg;
         painter.rect_filled(
             Rect::from_min_size(Pos2::new(minimap_x, vp_y), Vec2::new(minimap_w, vp_h)),
             CornerRadius::ZERO, vp_color,
         );
-        let vp_border = if dark {
-            Color32::from_rgba_premultiplied(122, 162, 247, 70)
-        } else {
-            Color32::from_rgba_premultiplied(55, 125, 207, 50)
-        };
+        let vp_border = self.tc.minimap_viewport_border;
         painter.line_segment(
             [Pos2::new(minimap_x, vp_y), Pos2::new(minimap_x + minimap_w, vp_y)],
             Stroke::new(1.0, vp_border),

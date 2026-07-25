@@ -182,12 +182,27 @@ pub fn find_in_content(
     let mut matches = Vec::new();
 
     for (line_idx, line) in content.lines().enumerate() {
-        for mat in pattern.find_iter(line) {
-            matches.push(FindMatch {
-                line: line_idx,
-                col: mat.start(),
-                length: mat.end() - mat.start(),
-            });
+        // The editor addresses text by *character* column (cursor, selection,
+        // rendering all use char offsets), while the regex engine reports byte
+        // offsets. Convert here, otherwise a match after any non-ASCII character
+        // jumps the cursor to the wrong column and replace-current corrupts the
+        // line. ASCII-only lines take the cheap path.
+        if line.is_ascii() {
+            for mat in pattern.find_iter(line) {
+                matches.push(FindMatch {
+                    line: line_idx,
+                    col: mat.start(),
+                    length: mat.end() - mat.start(),
+                });
+            }
+        } else {
+            for mat in pattern.find_iter(line) {
+                matches.push(FindMatch {
+                    line: line_idx,
+                    col: line[..mat.start()].chars().count(),
+                    length: mat.as_str().chars().count(),
+                });
+            }
         }
     }
 
@@ -379,8 +394,19 @@ mod tests {
         let m = find_in_content("Привет мир", "привет", false, false);
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].col, 0);
-        // "Привет" = 6 chars × 2 bytes = 12 bytes
-        assert_eq!(m[0].length, 12);
+        // `col`/`length` are *character* offsets — that is what the cursor,
+        // the selection and `replace_current` all address text by.
+        assert_eq!(m[0].length, 6);
+    }
+
+    #[test]
+    fn find_reports_character_columns() {
+        // "Привет, " is 8 characters (16 bytes) — the match must be reported at
+        // char column 8, not byte 16, or replace/goto land in the wrong place.
+        let m = find_in_content("Привет, world!", "world", false, false);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].col, 8);
+        assert_eq!(m[0].length, 5);
     }
 
     #[test]
@@ -409,16 +435,17 @@ mod tests {
     }
 
     #[test]
-    fn byte_offsets_land_on_char_boundaries() {
-        // If the regex ever returned mid-codepoint offsets, slicing would panic. This test
-        // succeeds only if `mat.start()` / `mat.end()` are char-aligned for multibyte text.
+    fn match_range_addresses_characters() {
+        // Indexing the line by the reported char range must yield the match —
+        // this is exactly what `replace_current` does against the rope.
         let content = "Привет, world!";
         let m = find_in_content(content, "world", false, false);
         assert_eq!(m.len(), 1);
-        let start = m[0].col;
-        let end = start + m[0].length;
-        // Slicing on the bytes must not panic.
-        let slice = &content[start..end];
-        assert_eq!(slice, "world");
+        let matched: String = content
+            .chars()
+            .skip(m[0].col)
+            .take(m[0].length)
+            .collect();
+        assert_eq!(matched, "world");
     }
 }

@@ -53,13 +53,13 @@ impl CodeEditorApp {
     }
 
     pub(super) fn render_overlays(&mut self, ctx: &egui::Context) {
-        let dark = self.app.settings.theme.resolved() != Theme::Light;
-        let popup_frame = || -> egui::Frame {
-            let popup_bg = if dark { Color32::from_rgb(30, 31, 42) } else { Color32::from_rgb(255, 255, 255) };
-            let shadow_alpha = if dark { 50 } else { 20 };
+        let light = self.app.settings.theme.is_light();
+        let tc = self.tc;
+        let popup_frame = move || -> egui::Frame {
+            let shadow_alpha = if light { 20 } else { 50 };
             egui::Frame::NONE
-                .fill(popup_bg)
-                .stroke(Stroke::new(1.0, if dark { Color32::from_rgb(55, 56, 70) } else { Color32::from_rgb(210, 210, 215) }))
+                .fill(tc.popup_bg)
+                .stroke(Stroke::new(1.0, tc.popup_border))
                 .corner_radius(CornerRadius::same(10))
                 .inner_margin(14.0)
                 .shadow(egui::epaint::Shadow {
@@ -92,7 +92,7 @@ impl CodeEditorApp {
                         ui.add_space(4.0);
                         for (i, item) in items.iter().enumerate().take(12) {
                             let s = i == self.app.palette_selected;
-                            let bg = if s { self.tc.selection_bg } else { Color32::TRANSPARENT };
+                            let bg = if s { self.tc.list_selection_bg } else { Color32::TRANSPARENT };
                             let rr = ui.add(egui::Button::new(
                                 RichText::new(format!("  {}", item.name)).font(small()).color(if s { self.tc.fg } else { self.tc.fg_dim })
                             ).fill(bg).min_size(Vec2::new(ui.available_width(), 26.0)).corner_radius(CornerRadius::same(4)).stroke(Stroke::NONE));
@@ -134,7 +134,7 @@ impl CodeEditorApp {
                             let s = i == self.app.quick_open_selected;
                             let rr = ui.add(egui::Button::new(
                                 RichText::new(format!("  {}", e.name)).font(small()).color(if s { self.tc.fg } else { self.tc.fg_dim })
-                            ).fill(if s { self.tc.selection_bg } else { Color32::TRANSPARENT }).min_size(Vec2::new(ui.available_width(), 26.0)).corner_radius(CornerRadius::same(4)).stroke(Stroke::NONE));
+                            ).fill(if s { self.tc.list_selection_bg } else { Color32::TRANSPARENT }).min_size(Vec2::new(ui.available_width(), 26.0)).corner_radius(CornerRadius::same(4)).stroke(Stroke::NONE));
                             if rr.clicked() || (enter && s) { let p = e.path.clone(); self.app.open_file(&p); self.app.focus = Focus::Editor; return; }
                         }
                         if enter && !res.is_empty() { let p = res[self.app.quick_open_selected].path.clone(); self.app.open_file(&p); self.app.focus = Focus::Editor; }

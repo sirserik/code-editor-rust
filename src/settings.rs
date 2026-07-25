@@ -26,8 +26,13 @@ fn default_font_size() -> f32 { 14.0 }
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Theme {
     SystemDefault,
+    /// JetBrains IntelliJ IDEA "Darcula". The old `TokyoNight` variant was
+    /// already *labelled* Darcula but carried a Zed One Dark palette; the alias
+    /// keeps existing `settings.json` files loading (without it, serde fails and
+    /// silently resets every setting, recent projects included).
+    #[serde(alias = "TokyoNight")]
+    Darcula,
     Ferrite,
-    TokyoNight,
     Dracula,
     OneDark,
     GruvboxDark,
@@ -35,14 +40,16 @@ pub enum Theme {
     Catppuccin,
     SolarizedDark,
     MonokaiPro,
+    /// JetBrains IntelliJ IDEA Light.
     Light,
 }
 
 impl Theme {
     pub const ALL: &'static [Theme] = &[
         Theme::SystemDefault,
+        Theme::Darcula,
+        Theme::Light,
         Theme::Ferrite,
-        Theme::TokyoNight,
         Theme::Dracula,
         Theme::OneDark,
         Theme::GruvboxDark,
@@ -50,14 +57,13 @@ impl Theme {
         Theme::Catppuccin,
         Theme::SolarizedDark,
         Theme::MonokaiPro,
-        Theme::Light,
     ];
 
     pub fn name(&self) -> &'static str {
         match self {
             Theme::SystemDefault => "System",
+            Theme::Darcula => "Darcula",
             Theme::Ferrite => "Ferrite",
-            Theme::TokyoNight => "Darcula",
             Theme::Dracula => "Dracula",
             Theme::OneDark => "One Dark",
             Theme::GruvboxDark => "Gruvbox Dark",
@@ -65,7 +71,22 @@ impl Theme {
             Theme::Catppuccin => "Catppuccin Mocha",
             Theme::SolarizedDark => "Solarized Dark",
             Theme::MonokaiPro => "Monokai Pro",
-            Theme::Light => "Light",
+            Theme::Light => "IntelliJ Light",
+        }
+    }
+
+    /// Is this a light-background theme? Used for the handful of places that
+    /// still need a coarse light/dark decision (egui `Visuals`, file icons).
+    pub fn is_light(&self) -> bool {
+        matches!(self.resolved(), Theme::Light)
+    }
+
+    /// Which bundled editor colour scheme paints the code for this UI theme.
+    pub fn syntax_theme(&self) -> SyntaxTheme {
+        match self.resolved() {
+            Theme::Darcula => SyntaxTheme::Darcula,
+            Theme::Light => SyntaxTheme::IntelliJLight,
+            _ => SyntaxTheme::Ferrite,
         }
     }
 
@@ -99,11 +120,20 @@ impl Theme {
     /// Resolve SystemDefault to actual theme
     pub fn resolved(&self) -> Theme {
         if *self == Theme::SystemDefault {
-            if Self::system_is_dark() { Theme::Ferrite } else { Theme::Light }
+            if Self::system_is_dark() { Theme::Darcula } else { Theme::Light }
         } else {
             *self
         }
     }
+}
+
+/// The bundled tmTheme that paints code. Separate from the UI theme because
+/// several UI themes share one editor scheme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxTheme {
+    Darcula,
+    IntelliJLight,
+    Ferrite,
 }
 
 use egui::Color32;
@@ -128,6 +158,93 @@ pub struct ThemeColors {
     pub orange: Color32,
     pub fold_fg: Color32,
     pub bracket_colors: [Color32; 6],
+
+    // ── Chrome details ──
+    // These used to be `if dark { … } else { … }` literals scattered through
+    // `gui/`, which meant every theme except the two defaults got colours picked
+    // for a different palette. They live here so a theme owns its whole look.
+    /// Text on the status bar.
+    pub status_fg: Color32,
+    /// 2px underline marking the active editor tab (IntelliJ New UI).
+    pub tab_underline: Color32,
+    /// Background of the active editor tab.
+    pub tab_active_bg: Color32,
+    /// Vertical indent guides in the editor and file tree.
+    pub indent_guide: Color32,
+    /// Pill behind the "⋯ N" marker on a folded line.
+    pub folded_bg: Color32,
+    /// Row hover highlight in lists (file tree, results).
+    pub hover_bg: Color32,
+    /// Selected row in lists — file tree, search results, command palette.
+    /// Deliberately softer than `selection_bg`: the editor's text selection is
+    /// tuned to sit under glyphs for a few characters, and stretching that same
+    /// tone across a full-width row reads as a shouting bar.
+    pub list_selection_bg: Color32,
+    /// Translucent viewport box drawn over the minimap.
+    pub minimap_viewport_bg: Color32,
+    pub minimap_viewport_border: Color32,
+    /// Drag-and-drop target highlight in the file tree.
+    pub drop_bg: Color32,
+    /// Floating surfaces: command palette, popups, autocomplete.
+    pub popup_bg: Color32,
+    pub popup_border: Color32,
+    /// Editor scrollbar.
+    pub scrollbar_track: Color32,
+    pub scrollbar_thumb: Color32,
+    /// Welcome-screen cards.
+    pub card_bg: Color32,
+    pub card_bg_hover: Color32,
+}
+
+/// Linear mix of two colours; `t` = 0 gives `a`, `t` = 1 gives `b`.
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
+}
+
+impl ThemeColors {
+    /// Sensible chrome derived from a theme's core palette. Themes spell out
+    /// their own values for anything they care about and inherit the rest with
+    /// `..ThemeColors::chrome(bg, fg, accent, panel)`.
+    fn chrome(bg: Color32, fg: Color32, accent: Color32, panel: Color32) -> ThemeColors {
+        let light = bg.r() as u32 + bg.g() as u32 + bg.b() as u32 > 3 * 128;
+        ThemeColors {
+            bg,
+            sidebar_bg: panel,
+            status_bg: panel,
+            tab_bar_bg: panel,
+            fg,
+            fg_dim: mix(bg, fg, 0.6),
+            gutter_fg: mix(bg, fg, 0.42),
+            accent,
+            selection_bg: mix(bg, accent, 0.35),
+            current_line_bg: mix(bg, fg, 0.06),
+            cursor_color: fg,
+            border: mix(panel, fg, 0.14),
+            bracket_match_bg: mix(bg, accent, 0.3),
+            red: Color32::from_rgb(0xdb, 0x3b, 0x4b),
+            green: Color32::from_rgb(0x06, 0x7d, 0x17),
+            orange: Color32::from_rgb(0x9e, 0x88, 0x0d),
+            fold_fg: mix(bg, fg, 0.45),
+            bracket_colors: [accent; 6],
+            status_fg: mix(panel, fg, 0.75),
+            tab_underline: accent,
+            tab_active_bg: bg,
+            indent_guide: mix(bg, fg, 0.16),
+            folded_bg: mix(bg, fg, 0.13),
+            hover_bg: mix(panel, fg, 0.09),
+            list_selection_bg: mix(panel, accent, 0.4),
+            minimap_viewport_bg: Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 26),
+            minimap_viewport_border: Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 64),
+            drop_bg: mix(panel, accent, 0.28),
+            popup_bg: if light { mix(panel, Color32::WHITE, 0.7) } else { mix(panel, Color32::BLACK, 0.25) },
+            popup_border: mix(panel, fg, 0.2),
+            scrollbar_track: Color32::TRANSPARENT,
+            scrollbar_thumb: mix(bg, fg, 0.28),
+            card_bg: mix(bg, fg, 0.05),
+            card_bg_hover: mix(bg, fg, 0.1),
+        }
+    }
 }
 
 impl Theme {
@@ -135,6 +252,55 @@ impl Theme {
         match self {
             // System Default — resolves to dark or light based on macOS setting
             Theme::SystemDefault => Theme::resolved(&Theme::SystemDefault).colors(),
+
+            // ── Darcula — JetBrains IntelliJ IDEA dark ──
+            // Editor surface is the classic Darcula #2B2B2B / #A9B7C6; the chrome
+            // around it follows the 2023+ "New UI": panels a shade lighter than
+            // the editor, hairline borders, one blue accent (#3574F0), a status
+            // bar in the panel colour, and a 2px underline on the active tab.
+            Theme::Darcula => ThemeColors {
+                bg: Color32::from_rgb(0x2b, 0x2b, 0x2b),          // editor
+                sidebar_bg: Color32::from_rgb(0x3c, 0x3f, 0x41),  // tool windows
+                status_bg: Color32::from_rgb(0x3c, 0x3f, 0x41),
+                tab_bar_bg: Color32::from_rgb(0x3c, 0x3f, 0x41),
+                fg: Color32::from_rgb(0xa9, 0xb7, 0xc6),          // default text
+                fg_dim: Color32::from_rgb(0x87, 0x89, 0x8b),      // secondary label
+                gutter_fg: Color32::from_rgb(0x60, 0x63, 0x66),   // line numbers
+                accent: Color32::from_rgb(0x35, 0x74, 0xf0),      // New UI blue
+                selection_bg: Color32::from_rgb(0x21, 0x42, 0x83),
+                current_line_bg: Color32::from_rgb(0x32, 0x32, 0x32),
+                cursor_color: Color32::from_rgb(0xbb, 0xbb, 0xbb),
+                border: Color32::from_rgb(0x39, 0x3b, 0x40),
+                bracket_match_bg: Color32::from_rgb(0x3b, 0x51, 0x4d), // Darcula brace match
+                red: Color32::from_rgb(0xff, 0x6b, 0x68),
+                green: Color32::from_rgb(0x6a, 0x87, 0x59),
+                orange: Color32::from_rgb(0xcc, 0x78, 0x32),
+                fold_fg: Color32::from_rgb(0x78, 0x7d, 0x82),
+                bracket_colors: [
+                    Color32::from_rgb(0xcc, 0x78, 0x32),   // keyword orange
+                    Color32::from_rgb(0x98, 0x76, 0xaa),   // field purple
+                    Color32::from_rgb(0x68, 0x97, 0xbb),   // number blue
+                    Color32::from_rgb(0xff, 0xc6, 0x6d),   // function yellow
+                    Color32::from_rgb(0x6a, 0x87, 0x59),   // string green
+                    Color32::from_rgb(0xe8, 0xbf, 0x6a),   // tag gold
+                ],
+                status_fg: Color32::from_rgb(0xbc, 0xbe, 0xc4),
+                tab_underline: Color32::from_rgb(0x35, 0x74, 0xf0),
+                tab_active_bg: Color32::from_rgb(0x2b, 0x2b, 0x2b),
+                indent_guide: Color32::from_rgb(0x4b, 0x4b, 0x4b),
+                folded_bg: Color32::from_rgb(0x3a, 0x3a, 0x3a),
+                hover_bg: Color32::from_rgb(0x4c, 0x50, 0x52),
+                list_selection_bg: Color32::from_rgb(0x2f, 0x65, 0xca), // IntelliJ tree selection
+                minimap_viewport_bg: Color32::from_rgba_unmultiplied(0xa9, 0xb7, 0xc6, 20),
+                minimap_viewport_border: Color32::from_rgba_unmultiplied(0xa9, 0xb7, 0xc6, 50),
+                drop_bg: Color32::from_rgb(0x2f, 0x40, 0x5f),
+                popup_bg: Color32::from_rgb(0x3c, 0x3f, 0x41),
+                popup_border: Color32::from_rgb(0x55, 0x55, 0x55),
+                scrollbar_track: Color32::TRANSPARENT,
+                scrollbar_thumb: Color32::from_rgba_premultiplied(0x59, 0x5b, 0x5d, 160),
+                card_bg: Color32::from_rgb(0x33, 0x33, 0x33),
+                card_bg_hover: Color32::from_rgb(0x3d, 0x3f, 0x41),
+            },
             // Ferrite — flagship dark theme: deep navy backgrounds with indigo accents.
             // Palette extracted from the Ferrite design mockup.
             Theme::Ferrite => ThemeColors {
@@ -163,34 +329,7 @@ impl Theme {
                     Color32::from_rgb(0xfb, 0xbf, 0x24),   // yellow
                     Color32::from_rgb(0xff, 0x6b, 0x88),   // pink/red
                 ],
-            },
-            // Darcula — Zed One Dark inspired palette
-            Theme::TokyoNight => ThemeColors {
-                bg: Color32::from_rgb(40, 44, 51),              // #282c33
-                sidebar_bg: Color32::from_rgb(59, 65, 77),      // #3b414d
-                status_bg: Color32::from_rgb(59, 65, 77),       // #3b414d
-                tab_bar_bg: Color32::from_rgb(47, 52, 62),      // #2f343e
-                fg: Color32::from_rgb(208, 212, 218),           // #d0d4da
-                fg_dim: Color32::from_rgb(148, 155, 168),       // muted text
-                gutter_fg: Color32::from_rgb(78, 90, 95),       // #4e5a5f
-                accent: Color32::from_rgb(116, 173, 232),       // #74ade8
-                selection_bg: Color32::from_rgba_unmultiplied(116, 173, 232, 61), // #74ade8 at 24%
-                current_line_bg: Color32::from_rgba_unmultiplied(47, 52, 62, 191), // #2f343e at 75%
-                cursor_color: Color32::from_rgb(116, 173, 232), // accent as cursor
-                border: Color32::from_rgb(70, 75, 87),          // #464b57
-                bracket_match_bg: Color32::from_rgb(58, 87, 110),
-                red: Color32::from_rgb(255, 107, 104),
-                green: Color32::from_rgb(106, 171, 115),
-                orange: Color32::from_rgb(204, 147, 89),
-                fold_fg: Color32::from_rgb(110, 113, 116),
-                bracket_colors: [
-                    Color32::from_rgb(204, 147, 89),   // gold
-                    Color32::from_rgb(179, 131, 191),   // purple
-                    Color32::from_rgb(104, 151, 210),   // blue
-                    Color32::from_rgb(255, 107, 104),   // red
-                    Color32::from_rgb(106, 171, 115),   // green
-                    Color32::from_rgb(86, 182, 194),    // cyan
-                ],
+                ..ThemeColors::chrome(Color32::from_rgb(0x0b,0x0d,0x13), Color32::from_rgb(0xc8,0xcf,0xe0), Color32::from_rgb(0x7c,0x8c,0xff), Color32::from_rgb(0x11,0x13,0x1b))
             },
             Theme::Dracula => ThemeColors {
                 bg: Color32::from_rgb(40, 42, 54),
@@ -218,6 +357,7 @@ impl Theme {
                     Color32::from_rgb(80, 250, 123),
                     Color32::from_rgb(255, 121, 198),
                 ],
+                ..ThemeColors::chrome(Color32::from_rgb(40,42,54), Color32::from_rgb(248,248,242), Color32::from_rgb(189,147,249), Color32::from_rgb(33,34,44))
             },
             Theme::OneDark => ThemeColors {
                 bg: Color32::from_rgb(40, 44, 52),
@@ -245,6 +385,7 @@ impl Theme {
                     Color32::from_rgb(152, 195, 121),
                     Color32::from_rgb(97, 175, 239),
                 ],
+                ..ThemeColors::chrome(Color32::from_rgb(40,44,52), Color32::from_rgb(171,178,191), Color32::from_rgb(97,175,239), Color32::from_rgb(33,37,43))
             },
             Theme::GruvboxDark => ThemeColors {
                 bg: Color32::from_rgb(40, 40, 40),
@@ -272,6 +413,7 @@ impl Theme {
                     Color32::from_rgb(131, 165, 152),
                     Color32::from_rgb(184, 187, 38),
                 ],
+                ..ThemeColors::chrome(Color32::from_rgb(40,40,40), Color32::from_rgb(235,219,178), Color32::from_rgb(250,189,47), Color32::from_rgb(30,30,30))
             },
             Theme::Nord => ThemeColors {
                 bg: Color32::from_rgb(46, 52, 64),
@@ -299,6 +441,7 @@ impl Theme {
                     Color32::from_rgb(163, 190, 140),
                     Color32::from_rgb(129, 161, 193),
                 ],
+                ..ThemeColors::chrome(Color32::from_rgb(46,52,64), Color32::from_rgb(216,222,233), Color32::from_rgb(136,192,208), Color32::from_rgb(39,44,54))
             },
             Theme::Catppuccin => ThemeColors {
                 bg: Color32::from_rgb(30, 30, 46),
@@ -326,6 +469,7 @@ impl Theme {
                     Color32::from_rgb(166, 227, 161),
                     Color32::from_rgb(137, 180, 250),
                 ],
+                ..ThemeColors::chrome(Color32::from_rgb(30,30,46), Color32::from_rgb(205,214,244), Color32::from_rgb(137,180,250), Color32::from_rgb(24,24,37))
             },
             Theme::SolarizedDark => ThemeColors {
                 bg: Color32::from_rgb(0, 43, 54),
@@ -353,6 +497,7 @@ impl Theme {
                     Color32::from_rgb(133, 153, 0),
                     Color32::from_rgb(38, 139, 210),
                 ],
+                ..ThemeColors::chrome(Color32::from_rgb(0,43,54), Color32::from_rgb(131,148,150), Color32::from_rgb(38,139,210), Color32::from_rgb(0,36,46))
             },
             Theme::MonokaiPro => ThemeColors {
                 bg: Color32::from_rgb(45, 42, 46),
@@ -380,34 +525,55 @@ impl Theme {
                     Color32::from_rgb(169, 220, 118),
                     Color32::from_rgb(255, 97, 136),
                 ],
+                ..ThemeColors::chrome(Color32::from_rgb(45,42,46), Color32::from_rgb(252,252,250), Color32::from_rgb(120,220,232), Color32::from_rgb(37,34,38))
             },
-            // Light — JetBrains IntelliJ / VS Code inspired
+            // ── IntelliJ Light — JetBrains IntelliJ IDEA light ──
+            // White editor with the signature #FCFAED caret row, New UI chrome
+            // (#F7F8FA panels, #EBECF0 hairlines, #3574F0 accent). The status bar
+            // is panel-coloured with dark text — the old solid-blue VS Code strip
+            // forced white-on-blue text that clashed with everything else.
             Theme::Light => ThemeColors {
-                bg: Color32::from_rgb(255, 255, 255),            // White editor
-                sidebar_bg: Color32::from_rgb(245, 246, 247),    // Subtle warm gray (IntelliJ-like)
-                status_bg: Color32::from_rgb(0, 122, 204),       // Blue status bar (VS Code)
-                tab_bar_bg: Color32::from_rgb(236, 237, 239),    // Tab strip
-                fg: Color32::from_rgb(30, 30, 30),               // Near-black text
-                fg_dim: Color32::from_rgb(110, 115, 125),        // Readable secondary
-                gutter_fg: Color32::from_rgb(150, 155, 165),     // Line numbers
-                accent: Color32::from_rgb(0, 122, 204),          // VS Code blue
-                selection_bg: Color32::from_rgb(218, 230, 247),  // Soft, refined selection
-                current_line_bg: Color32::from_rgb(248, 249, 250), // Very subtle
-                cursor_color: Color32::from_rgb(0, 0, 0),        // Black cursor
-                border: Color32::from_rgb(224, 226, 230),        // Visible borders
-                bracket_match_bg: Color32::from_rgb(204, 222, 244),
-                red: Color32::from_rgb(205, 49, 49),
-                green: Color32::from_rgb(22, 130, 60),
-                orange: Color32::from_rgb(191, 120, 12),
-                fold_fg: Color32::from_rgb(145, 150, 160),
+                bg: Color32::from_rgb(0xff, 0xff, 0xff),          // editor
+                sidebar_bg: Color32::from_rgb(0xf7, 0xf8, 0xfa),  // tool windows
+                status_bg: Color32::from_rgb(0xf7, 0xf8, 0xfa),
+                tab_bar_bg: Color32::from_rgb(0xf7, 0xf8, 0xfa),
+                fg: Color32::from_rgb(0x08, 0x08, 0x08),          // default text
+                fg_dim: Color32::from_rgb(0x6c, 0x70, 0x7e),      // secondary label
+                gutter_fg: Color32::from_rgb(0x9b, 0x9b, 0x9b),   // line numbers
+                accent: Color32::from_rgb(0x35, 0x74, 0xf0),      // New UI blue
+                selection_bg: Color32::from_rgb(0xa6, 0xd2, 0xff),
+                current_line_bg: Color32::from_rgb(0xfc, 0xfa, 0xed), // the IntelliJ caret row
+                cursor_color: Color32::from_rgb(0x00, 0x00, 0x00),
+                border: Color32::from_rgb(0xeb, 0xec, 0xf0),
+                bracket_match_bg: Color32::from_rgb(0x93, 0xd9, 0xd9), // IntelliJ brace match
+                red: Color32::from_rgb(0xdb, 0x3b, 0x4b),
+                green: Color32::from_rgb(0x06, 0x7d, 0x17),
+                orange: Color32::from_rgb(0x9e, 0x88, 0x0d),
+                fold_fg: Color32::from_rgb(0x8c, 0x8c, 0x8c),
                 bracket_colors: [
-                    Color32::from_rgb(0, 122, 204),    // blue
-                    Color32::from_rgb(150, 40, 190),   // purple
-                    Color32::from_rgb(0, 140, 125),    // teal
-                    Color32::from_rgb(205, 49, 49),    // red
-                    Color32::from_rgb(22, 130, 60),    // green
-                    Color32::from_rgb(191, 120, 12),   // orange
+                    Color32::from_rgb(0x00, 0x33, 0xb3),   // keyword blue
+                    Color32::from_rgb(0x87, 0x10, 0x94),   // field purple
+                    Color32::from_rgb(0x00, 0x62, 0x7a),   // function teal
+                    Color32::from_rgb(0x9e, 0x88, 0x0d),   // annotation gold
+                    Color32::from_rgb(0x06, 0x7d, 0x17),   // string green
+                    Color32::from_rgb(0x17, 0x50, 0xeb),   // number blue
                 ],
+                status_fg: Color32::from_rgb(0x3c, 0x3f, 0x41),
+                tab_underline: Color32::from_rgb(0x35, 0x74, 0xf0),
+                tab_active_bg: Color32::from_rgb(0xff, 0xff, 0xff),
+                indent_guide: Color32::from_rgb(0xd6, 0xd6, 0xd6),
+                folded_bg: Color32::from_rgb(0xe8, 0xea, 0xef),
+                hover_bg: Color32::from_rgb(0xea, 0xed, 0xf2),
+                list_selection_bg: Color32::from_rgb(0xd4, 0xe2, 0xff), // IntelliJ tree selection
+                minimap_viewport_bg: Color32::from_rgba_unmultiplied(0x35, 0x74, 0xf0, 18),
+                minimap_viewport_border: Color32::from_rgba_unmultiplied(0x35, 0x74, 0xf0, 45),
+                drop_bg: Color32::from_rgb(0xd4, 0xe2, 0xff),
+                popup_bg: Color32::from_rgb(0xff, 0xff, 0xff),
+                popup_border: Color32::from_rgb(0xd3, 0xd5, 0xdb),
+                scrollbar_track: Color32::TRANSPARENT,
+                scrollbar_thumb: Color32::from_rgba_premultiplied(0xa0, 0xa4, 0xad, 150),
+                card_bg: Color32::from_rgb(0xf2, 0xf4, 0xf8),
+                card_bg_hover: Color32::from_rgb(0xe8, 0xeb, 0xf2),
             },
         }
     }
@@ -416,7 +582,7 @@ impl Theme {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            theme: Theme::Ferrite,
+            theme: Theme::Darcula,
             tab_size: 4,
             show_line_numbers: true,
             word_wrap: true,
@@ -507,7 +673,7 @@ mod tests {
     #[test]
     fn default_settings() {
         let s = Settings::default();
-        assert_eq!(s.theme, Theme::Ferrite);
+        assert_eq!(s.theme, Theme::Darcula);
         assert_eq!(s.tab_size, 4);
         assert!(s.show_line_numbers);
         assert!(s.word_wrap);
@@ -517,8 +683,8 @@ mod tests {
 
     #[test]
     fn theme_names() {
-        assert_eq!(Theme::Light.name(), "Light");
-        assert_eq!(Theme::TokyoNight.name(), "Darcula");
+        assert_eq!(Theme::Light.name(), "IntelliJ Light");
+        assert_eq!(Theme::Darcula.name(), "Darcula");
         assert_eq!(Theme::SystemDefault.name(), "System");
     }
 
@@ -526,14 +692,71 @@ mod tests {
     fn theme_all_contains_system() {
         assert!(Theme::ALL.contains(&Theme::SystemDefault));
         assert!(Theme::ALL.contains(&Theme::Light));
-        assert!(Theme::ALL.contains(&Theme::TokyoNight));
+        assert!(Theme::ALL.contains(&Theme::Darcula));
     }
 
     #[test]
     fn theme_resolved_system() {
         let resolved = Theme::SystemDefault.resolved();
-        // Should resolve to either Light or Ferrite (the dark default)
-        assert!(resolved == Theme::Light || resolved == Theme::Ferrite);
+        // The IntelliJ pair is what System resolves to.
+        assert!(resolved == Theme::Light || resolved == Theme::Darcula);
+    }
+
+    #[test]
+    fn old_tokyonight_settings_still_load() {
+        // Existing settings.json files name the theme "TokyoNight". Without the
+        // serde alias, deserialization fails and `load()` silently resets every
+        // setting — including the recent-projects list.
+        let json = r#"{"theme":"TokyoNight","tab_size":2,"show_line_numbers":true,
+                       "word_wrap":false,"font_size":16.0,"recent_projects":[]}"#;
+        let s: Settings = serde_json::from_str(json).expect("legacy settings must load");
+        assert_eq!(s.theme, Theme::Darcula);
+        assert_eq!(s.tab_size, 2);
+        assert_eq!(s.font_size, 16.0);
+    }
+
+    #[test]
+    fn intellij_themes_use_jetbrains_palette() {
+        let d = Theme::Darcula.colors();
+        assert_eq!(d.bg, Color32::from_rgb(0x2b, 0x2b, 0x2b));
+        assert_eq!(d.fg, Color32::from_rgb(0xa9, 0xb7, 0xc6));
+        assert_eq!(d.current_line_bg, Color32::from_rgb(0x32, 0x32, 0x32));
+        assert_eq!(d.selection_bg, Color32::from_rgb(0x21, 0x42, 0x83));
+
+        let l = Theme::Light.colors();
+        assert_eq!(l.bg, Color32::WHITE);
+        // The signature IntelliJ caret row, not a grey tint.
+        assert_eq!(l.current_line_bg, Color32::from_rgb(0xfc, 0xfa, 0xed));
+        assert_eq!(l.selection_bg, Color32::from_rgb(0xa6, 0xd2, 0xff));
+        // Status bar text must be readable on a panel-coloured (not blue) strip.
+        assert_ne!(l.status_bg, l.status_fg);
+        assert!(l.status_fg.r() < 128, "light status text should be dark");
+    }
+
+    #[test]
+    fn every_theme_has_usable_chrome() {
+        for theme in Theme::ALL {
+            let c = theme.colors();
+            let name = theme.name();
+            assert_ne!(c.fg, c.bg, "{}: text invisible on editor bg", name);
+            assert_ne!(c.status_fg, c.status_bg, "{}: status text invisible", name);
+            assert_ne!(c.fg, c.sidebar_bg, "{}: sidebar text invisible", name);
+            assert_ne!(c.indent_guide, c.bg, "{}: indent guides invisible", name);
+            assert_ne!(c.popup_bg, c.popup_border, "{}: popup edge invisible", name);
+            assert_ne!(c.hover_bg, c.sidebar_bg, "{}: hover state invisible", name);
+            assert_ne!(c.list_selection_bg, c.sidebar_bg, "{}: list selection invisible", name);
+            assert_ne!(c.list_selection_bg, c.hover_bg, "{}: selection == hover", name);
+        }
+    }
+
+    #[test]
+    fn list_selection_is_softer_than_editor_selection() {
+        // A full-width row painted in the editor's text-selection tone shouts.
+        // The two must be distinct so tuning one doesn't drag the other along.
+        for theme in [Theme::Darcula, Theme::Light] {
+            let c = theme.colors();
+            assert_ne!(c.list_selection_bg, c.selection_bg, "{}", theme.name());
+        }
     }
 
     #[test]

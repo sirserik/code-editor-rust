@@ -10,13 +10,8 @@ const HEADER_H: f32 = 28.0;
 
 impl CodeEditorApp {
     pub(super) fn render_bottom_panel(&mut self, ctx: &egui::Context) {
-        let dark = self.app.settings.theme.resolved() != Theme::Light;
         let tc = self.tc;
-        let bg = if dark {
-            Color32::from_rgb(30, 32, 38)
-        } else {
-            Color32::from_rgb(255, 255, 255)
-        };
+        let bg = tc.bg;
 
         // Pull pending PTY bytes into the grid once per frame.
         if let Some(id) = self.app.active_terminal {
@@ -45,7 +40,7 @@ impl CodeEditorApp {
                     Stroke::new(1.0, tc.border),
                 );
 
-                self.render_bottom_header(ui, dark);
+                self.render_bottom_header(ui);
 
                 // Content takes whatever's left after the header.
                 let content_rect = Rect::from_min_max(
@@ -59,24 +54,20 @@ impl CodeEditorApp {
                 );
 
                 match self.app.bottom_tab {
-                    BottomTab::Terminal => self.render_terminal_content(&mut content_ui, ctx, dark),
-                    BottomTab::Output => self.render_output_content(&mut content_ui, ctx, dark),
+                    BottomTab::Terminal => self.render_terminal_content(&mut content_ui, ctx),
+                    BottomTab::Output => self.render_output_content(&mut content_ui, ctx),
                 }
             });
     }
 
-    fn render_bottom_header(&mut self, ui: &mut egui::Ui, dark: bool) {
+    fn render_bottom_header(&mut self, ui: &mut egui::Ui) {
         let tc = self.tc;
         let panel_rect = ui.max_rect();
         let hdr = Rect::from_min_size(
             Pos2::new(panel_rect.min.x, panel_rect.min.y),
             Vec2::new(panel_rect.width(), HEADER_H),
         );
-        let hdr_bg = if dark {
-            Color32::from_rgb(38, 40, 48)
-        } else {
-            Color32::from_rgb(243, 243, 243)
-        };
+        let hdr_bg = tc.sidebar_bg;
         ui.painter().rect_filled(hdr, CornerRadius::ZERO, hdr_bg);
 
         // Tabs (left-aligned).
@@ -136,11 +127,7 @@ impl CodeEditorApp {
             ui.painter().rect_filled(
                 close_rect,
                 CornerRadius::same(3),
-                if dark {
-                    Color32::from_rgb(180, 50, 50)
-                } else {
-                    Color32::from_rgb(220, 80, 80)
-                },
+                tc.red,
             );
             ui.painter().text(
                 close_rect.center(),
@@ -166,15 +153,15 @@ impl CodeEditorApp {
 
         if self.app.bottom_tab == BottomTab::Output {
             // Stop / Clear / Re-run buttons + status text.
-            if self.action_button(ui, &mut right_x, hdr, dark, "↻", "Re-run last command") {
+            if self.action_button(ui, &mut right_x, hdr, "↻", "Re-run last command") {
                 self.app.run_last();
             }
-            if self.action_button(ui, &mut right_x, hdr, dark, "✕", "Clear output") {
+            if self.action_button(ui, &mut right_x, hdr, "✕", "Clear output") {
                 self.app.output.clear();
             }
             let stop_enabled = self.app.output.is_running();
             if stop_enabled
-                && self.action_button(ui, &mut right_x, hdr, dark, "■", "Stop running command")
+                && self.action_button(ui, &mut right_x, hdr, "■", "Stop running command")
             {
                 self.app.output.stop();
             }
@@ -214,7 +201,6 @@ impl CodeEditorApp {
         ui: &mut egui::Ui,
         right_x: &mut f32,
         hdr: Rect,
-        dark: bool,
         glyph: &str,
         tooltip: &str,
     ) -> bool {
@@ -226,11 +212,7 @@ impl CodeEditorApp {
         );
         let resp = ui.allocate_rect(rect, egui::Sense::click());
         let resp = resp.on_hover_text(tooltip);
-        let hover_bg = if dark {
-            Color32::from_rgb(58, 62, 72)
-        } else {
-            Color32::from_rgb(225, 225, 225)
-        };
+        let hover_bg = tc.hover_bg;
         if resp.hovered() {
             ui.painter().rect_filled(rect, CornerRadius::same(3), hover_bg);
         }
@@ -249,14 +231,9 @@ impl CodeEditorApp {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &egui::Context,
-        dark: bool,
     ) {
         let tc = self.tc;
-        let term_fg = if dark {
-            Color32::from_rgb(200, 204, 212)
-        } else {
-            Color32::from_rgb(30, 30, 30)
-        };
+        let term_fg = tc.fg;
 
         if let Some(id) = self.app.active_terminal {
             if let Some(grid) = self.app.terminal.grids.get(&id) {
@@ -279,11 +256,7 @@ impl CodeEditorApp {
                                 ui.painter().rect_filled(
                                     rect,
                                     CornerRadius::ZERO,
-                                    if dark {
-                                        Color32::from_rgb(40, 44, 52)
-                                    } else {
-                                        Color32::from_rgb(248, 248, 248)
-                                    },
+                                    tc.current_line_bg,
                                 );
                             }
                             if !line.is_empty() {
@@ -375,24 +348,11 @@ impl CodeEditorApp {
         &mut self,
         ui: &mut egui::Ui,
         _ctx: &egui::Context,
-        dark: bool,
     ) {
         let tc = self.tc;
-        let stdout_color = if dark {
-            Color32::from_rgb(200, 204, 212)
-        } else {
-            Color32::from_rgb(30, 30, 30)
-        };
-        let stderr_color = if dark {
-            Color32::from_rgb(240, 138, 138)
-        } else {
-            Color32::from_rgb(180, 40, 40)
-        };
-        let system_color = if dark {
-            Color32::from_rgb(150, 180, 220)
-        } else {
-            Color32::from_rgb(40, 80, 160)
-        };
+        let stdout_color = tc.fg;
+        let stderr_color = tc.red;
+        let system_color = tc.accent;
         let link_color = tc.accent;
 
         // Empty-state hint.
@@ -465,11 +425,7 @@ impl CodeEditorApp {
                             ui.painter().rect_filled(
                                 rect,
                                 CornerRadius::ZERO,
-                                if dark {
-                                    Color32::from_rgb(45, 48, 56)
-                                } else {
-                                    Color32::from_rgb(238, 240, 244)
-                                },
+                                tc.hover_bg,
                             );
                             ctx_set_cursor(ui.ctx(), egui::CursorIcon::PointingHand);
                         }

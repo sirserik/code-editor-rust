@@ -365,6 +365,58 @@ mod tests {
         let spans = highlight_line("some text", "unknown_lang");
         assert!(spans.is_empty());
     }
+
+    // ── check_syntax (streaming scanner) ──
+
+    #[test]
+    fn syntax_clean_file_has_no_errors() {
+        let src = "fn main() {\n    let v = vec![1, 2, 3];\n    println!(\"{:?}\", v);\n}\n";
+        assert!(check_syntax(src, "rust").is_empty(), "{:?}", check_syntax(src, "rust"));
+    }
+
+    #[test]
+    fn syntax_reports_unclosed_bracket_with_position() {
+        let src = "fn main() {\n    let x = 1;\n";
+        let errs = check_syntax(src, "rust");
+        let unclosed = errs.iter().find(|e| e.message.contains("Unclosed")).expect("unclosed brace");
+        assert_eq!(unclosed.line, 0);
+        assert_eq!(unclosed.col, 10); // the '{' on line 0
+    }
+
+    #[test]
+    fn syntax_reports_unexpected_closer() {
+        let errs = check_syntax("let x = 1;\n}\n", "rust");
+        assert!(errs.iter().any(|e| e.message.contains("Unexpected")));
+    }
+
+    #[test]
+    fn syntax_ignores_brackets_in_strings_and_comments() {
+        let src = "// a stray } here\nlet s = \"another ) inside\";\n/* and { in a block */\n";
+        assert!(check_syntax(src, "rust").is_empty(), "{:?}", check_syntax(src, "rust"));
+    }
+
+    #[test]
+    fn syntax_survives_multibyte_text() {
+        // The scanner counts characters, so a Cyrillic line must not shift the
+        // reported column of a later error.
+        let src = "// комментарий\nfn ф() {\n";
+        let errs = check_syntax(src, "rust");
+        let unclosed = errs.iter().find(|e| e.message.contains("Unclosed '{'")).expect("unclosed brace");
+        assert_eq!(unclosed.line, 1);
+        assert_eq!(unclosed.col, 7); // "fn ф() " is 7 characters
+    }
+
+    #[test]
+    fn syntax_flags_unclosed_string() {
+        let errs = check_syntax("let s = \"oops;\n", "rust");
+        assert!(errs.iter().any(|e| e.message == "Unclosed string"));
+    }
+
+    #[test]
+    fn syntax_skipped_for_plain_text() {
+        assert!(check_syntax("a ) stray } bracket", "text").is_empty());
+        assert!(check_syntax("a ) stray } bracket", "markdown").is_empty());
+    }
 }
 
 // ---- Language-specific highlighters ----
@@ -888,55 +940,50 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
     let mut line = 0usize;
     let mut col = 0usize;
 
-    let chars: Vec<char> = content.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
+    // Streamed with one char of lookahead. Collecting the whole file into a
+    // `Vec<char>` first cost 4 bytes per byte of source (a 5 MB file meant a
+    // 20 MB allocation) before a single bracket was examined.
+    let mut it = content.chars().peekable();
 
-    while i < len {
-        let ch = chars[i];
-
+    while let Some(ch) = it.next() {
         // Track line/col
         if ch == '\n' {
             line += 1;
             col = 0;
             in_line_comment = false;
-            i += 1;
             continue;
         }
 
         // Block comment start
-        if !in_string && !in_line_comment && !in_block_comment && ch == '/' && i + 1 < len && chars[i + 1] == '*' {
+        if !in_string && !in_line_comment && !in_block_comment && ch == '/' && it.peek() == Some(&'*') {
+            it.next();
             in_block_comment = true;
-            i += 2;
             col += 2;
             continue;
         }
 
         // Block comment end
-        if in_block_comment && ch == '*' && i + 1 < len && chars[i + 1] == '/' {
+        if in_block_comment && ch == '*' && it.peek() == Some(&'/') {
+            it.next();
             in_block_comment = false;
-            i += 2;
             col += 2;
             continue;
         }
 
         if in_block_comment || in_line_comment {
-            i += 1;
             col += 1;
             continue;
         }
 
         // Line comment
-        if !in_string && ch == '/' && i + 1 < len && chars[i + 1] == '/' {
+        if !in_string && ch == '/' && it.peek() == Some(&'/') {
             in_line_comment = true;
-            i += 1;
             col += 1;
             continue;
         }
         if !in_string && ch == '#' {
             // Python/shell/yaml comments (but not inside strings)
             in_line_comment = true;
-            i += 1;
             col += 1;
             continue;
         }
@@ -945,21 +992,19 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
         if !in_string && (ch == '"' || ch == '\'' || ch == '`') {
             in_string = true;
             string_char = ch;
-            i += 1;
             col += 1;
             continue;
         }
         if in_string {
             if ch == '\\' {
                 // Skip escaped char
-                i += 2;
+                it.next();
                 col += 2;
                 continue;
             }
             if ch == string_char {
                 in_string = false;
             }
-            i += 1;
             col += 1;
             continue;
         }
@@ -999,7 +1044,6 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
             _ => {}
         }
 
-        i += 1;
         col += 1;
     }
 
@@ -1015,30 +1059,31 @@ fn check_brackets(content: &str, errors: &mut Vec<SyntaxError>) {
 }
 
 fn check_strings(content: &str, language: &str, errors: &mut Vec<SyntaxError>) {
-    let lines: Vec<&str> = content.lines().collect();
     let quote_chars: &[char] = match language {
         "python" | "py" => &['"', '\''],
         "json" => &['"'],
         _ => &['"', '\''],
     };
 
-    for (line_idx, line_str) in lines.iter().enumerate() {
-        let chars: Vec<char> = line_str.chars().collect();
-        let len = chars.len();
-        let mut i = 0;
+    // Same streaming treatment as `check_brackets`: no `Vec<&str>` of every
+    // line, no `Vec<char>` per line.
+    for (line_idx, line_str) in content.lines().enumerate() {
+        let len = line_str.chars().count();
+        let mut it = line_str.chars().peekable();
+        let mut i = 0usize;
 
-        while i < len {
+        while let Some(ch) = it.next() {
             // Skip comments
-            if i + 1 < len && chars[i] == '/' && chars[i + 1] == '/' {
+            if ch == '/' && it.peek() == Some(&'/') {
                 break;
             }
-            if chars[i] == '#' && language != "css" && language != "scss" {
+            if ch == '#' && language != "css" && language != "scss" {
                 break;
             }
 
             // Check for string
-            if quote_chars.contains(&chars[i]) {
-                let quote = chars[i];
+            if quote_chars.contains(&ch) {
+                let quote = ch;
                 // Skip template literals (backtick) — can be multiline
                 if quote == '`' {
                     i += 1;
@@ -1047,17 +1092,17 @@ fn check_strings(content: &str, language: &str, errors: &mut Vec<SyntaxError>) {
                 let start_col = i;
                 i += 1;
                 let mut closed = false;
-                while i < len {
-                    if chars[i] == '\\' {
+                while let Some(c) = it.next() {
+                    if c == '\\' {
+                        it.next();
                         i += 2;
                         continue;
                     }
-                    if chars[i] == quote {
+                    i += 1;
+                    if c == quote {
                         closed = true;
-                        i += 1;
                         break;
                     }
-                    i += 1;
                 }
                 if !closed {
                     // Check if it's a triple-quote (Python)

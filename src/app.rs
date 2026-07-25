@@ -823,6 +823,10 @@ impl App {
         }
         let suggestion = self.autocomplete_suggestions[self.autocomplete_selected].clone();
         let prefix = self.active_editor().word_at_cursor();
+        // Cursor columns are character offsets — `prefix.len()` (bytes) would
+        // delete the wrong number of characters (and could underflow the cursor)
+        // for any non-ASCII identifier.
+        let prefix_chars = prefix.chars().count();
 
         // Check if it's a snippet (starts with ⚡)
         if suggestion.starts_with("⚡ ") {
@@ -835,7 +839,7 @@ impl App {
                 let ed = self.active_editor_mut();
                 ed.save_undo_snapshot();
                 // Delete prefix (the trigger word)
-                for _ in 0..prefix.len() {
+                for _ in 0..prefix_chars.min(ed.cursor.col) {
                     ed.cursor.col -= 1;
                     ed.buffer.delete_char(ed.cursor.line, ed.cursor.col);
                 }

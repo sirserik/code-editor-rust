@@ -32,6 +32,9 @@ pub struct CodeEditorApp {
     pub(crate) section_times_ms: [f32; 5], // [menubar, tabs, status, sidebar, editor]
     // Cache last applied zoom factor so we don't invalidate egui's glyph cache every frame
     last_zoom: f32,
+    /// Light/dark polarity last pushed to the OS window chrome, so the (cheap but
+    /// not free) viewport command only fires when it actually changes.
+    window_chrome_light: Option<bool>,
     // Cached title-strip text — recomputed only when project root or branch changes.
     cached_title: String,
     cached_title_key: (Option<String>, Option<String>),
@@ -142,6 +145,7 @@ impl CodeEditorApp {
             frame_times_ms: std::collections::VecDeque::with_capacity(60),
             section_times_ms: [0.0; 5],
             last_zoom: 0.0,
+            window_chrome_light: None,
             cached_title: String::new(),
             cached_title_key: (None, None),
         }
@@ -173,12 +177,31 @@ impl eframe::App for CodeEditorApp {
             self.last_zoom = 1.0;
         }
 
+        // ── Window chrome follows the editor theme ──
+        // With `fullsize_content_view` the title bar overlays our content, but
+        // macOS still paints it with the *system* appearance material. On a dark
+        // system that put an opaque #282C2F band across the top of the light
+        // theme — a black stripe over a white window. Handing the window an
+        // explicit appearance makes the title bar (and the traffic lights) match
+        // whichever theme is active, the way an IDE does.
+        {
+            let light = self.app.settings.theme.is_light();
+            if self.window_chrome_light != Some(light) {
+                self.window_chrome_light = Some(light);
+                ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if light {
+                    egui::SystemTheme::Light
+                } else {
+                    egui::SystemTheme::Dark
+                }));
+            }
+        }
+
         // ── Theme refresh (check system theme every ~5s for SystemDefault) ──
         let resolved_theme = self.app.settings.theme.resolved();
         let new_tc = resolved_theme.colors();
         if self.tc.bg != new_tc.bg {
             self.tc = new_tc;
-            let mut visuals = if resolved_theme == Theme::Light {
+            let mut visuals = if resolved_theme.is_light() {
                 egui::Visuals::light()
             } else {
                 egui::Visuals::dark()

@@ -139,7 +139,7 @@ impl CodeEditorApp {
             ui.painter().rect_filled(
                 rect,
                 CornerRadius::same(4),
-                Color32::from_rgba_unmultiplied(255, 255, 255, 14),
+                self.tc.hover_bg,
             );
         }
         let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(14.0));
@@ -167,20 +167,12 @@ impl CodeEditorApp {
             let (rect, resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
             let resp = resp.on_hover_text(tooltip);
             if active {
-                ui.painter().rect_filled(
-                    rect,
-                    CornerRadius::same(10),
-                    Color32::from_rgba_unmultiplied(tc.accent.r(), tc.accent.g(), tc.accent.b(), 46),
-                );
+                ui.painter().rect_filled(rect, CornerRadius::same(10), tc.list_selection_bg);
             } else if !disabled && resp.hovered() {
-                ui.painter().rect_filled(
-                    rect,
-                    CornerRadius::same(10),
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 10),
-                );
+                ui.painter().rect_filled(rect, CornerRadius::same(10), tc.hover_bg);
             }
             let color = if active {
-                Color32::WHITE
+                tc.fg
             } else if disabled {
                 Color32::from_rgba_unmultiplied(tc.fg_dim.r(), tc.fg_dim.g(), tc.fg_dim.b(), 130)
             } else {
@@ -204,7 +196,7 @@ impl CodeEditorApp {
     }
 
     fn render_file_tree(&mut self, ui: &mut egui::Ui) {
-        let dark = self.app.settings.theme.resolved() != Theme::Light;
+        let dark = !self.app.settings.theme.is_light();
         // The EXPLORER header (in render_sidebar) carries the +/collapse/refresh actions.
         // The "open another folder" and "close project" actions live in File menu + ⌘O / ⌘⇧W.
         let row_h = 28.0;
@@ -260,10 +252,10 @@ impl CodeEditorApp {
                     false
                 };
 
-                let drop_bg = if dark { Color32::from_rgb(35, 50, 80) } else { Color32::from_rgb(225, 235, 248) };
-                let hover_bg = if dark { Color32::from_rgb(54, 60, 70) } else { Color32::from_rgb(236, 238, 242) }; // Zed: #363c46
+                let drop_bg = self.tc.drop_bg;
+                let hover_bg = self.tc.hover_bg;
                 let is_hovered = row_resp.hovered() && !is_drop && !sel;
-                let bg = if is_drop { drop_bg } else if sel { self.tc.selection_bg } else if is_hovered { hover_bg } else { Color32::TRANSPARENT };
+                let bg = if is_drop { drop_bg } else if sel { self.tc.list_selection_bg } else if is_hovered { hover_bg } else { Color32::TRANSPARENT };
 
                 if bg != Color32::TRANSPARENT {
                     ui.painter().rect_filled(row_rect, CornerRadius::ZERO, bg);
@@ -280,7 +272,7 @@ impl CodeEditorApp {
 
                 // Indent guide lines
                 let painter = ui.painter();
-                let guide_c = if dark { Color32::from_rgb(57, 57, 57) } else { Color32::from_rgb(228, 228, 228) };
+                let guide_c = self.tc.indent_guide;
                 for d in 1..depth + 1 {
                     let gx = row_rect.min.x + indent_px * d as f32 + 4.0;
                     painter.line_segment(
@@ -298,13 +290,7 @@ impl CodeEditorApp {
                 } else {
                     self.tc.fg
                 }.linear_multiply(dim);
-                let arrow_color = if sel {
-                    self.tc.fg
-                } else if dark {
-                    Color32::from_rgb(160, 165, 175)
-                } else {
-                    Color32::from_rgb(95, 100, 110)
-                }.linear_multiply(dim);
+                let arrow_color = if sel { self.tc.fg } else { self.tc.fg_dim }.linear_multiply(dim);
 
                 if is_directory {
                     // Chevron (dim) + hollow folder outline (dim gray) — matches the
@@ -650,7 +636,7 @@ impl CodeEditorApp {
                         egui::Sense::click(),
                     );
                     if row_resp.hovered() {
-                        ui.painter().rect_filled(row_rect, CornerRadius::ZERO, tc.selection_bg);
+                        ui.painter().rect_filled(row_rect, CornerRadius::ZERO, tc.list_selection_bg);
                     }
                     // Checkbox at left (☑ if staged, ☐ if not)
                     let checkbox_x = row_rect.min.x + 8.0;
@@ -779,8 +765,8 @@ impl CodeEditorApp {
             return;
         }
 
-        let dark = self.app.settings.theme.resolved() != Theme::Light;
-        let popup_bg = if dark { Color32::from_rgb(30, 31, 42) } else { Color32::from_rgb(255, 255, 255) };
+        let light = self.app.settings.theme.is_light();
+        let popup_bg = tc.popup_bg;
 
         let mut close_after = false;
         let mut checkout_target: Option<String> = None;
@@ -793,12 +779,12 @@ impl CodeEditorApp {
             .show(ctx, |ui| {
                 egui::Frame::NONE
                     .fill(popup_bg)
-                    .stroke(Stroke::new(1.0, tc.border))
+                    .stroke(Stroke::new(1.0, tc.popup_border))
                     .corner_radius(CornerRadius::same(6))
                     .inner_margin(8.0)
                     .shadow(egui::epaint::Shadow {
                         offset: [0, 8], blur: 24, spread: 2,
-                        color: Color32::from_black_alpha(if dark { 80 } else { 30 }),
+                        color: Color32::from_black_alpha(if light { 30 } else { 80 }),
                     })
                     .show(ui, |ui| {
                         ui.set_min_width(280.0);
@@ -953,7 +939,7 @@ impl CodeEditorApp {
 
     fn render_search(&mut self, ui: &mut egui::Ui) {
         let tc = self.tc;
-        let dark = self.app.settings.theme.resolved() != Theme::Light;
+        let dark = !self.app.settings.theme.is_light();
         ui.add_space(6.0);
 
         ui.horizontal(|ui| {
@@ -1136,7 +1122,7 @@ impl CodeEditorApp {
                         egui::Sense::click(),
                     );
                     if row_resp.hovered() {
-                        ui.painter().rect_filled(row_rect, CornerRadius::ZERO, tc.selection_bg);
+                        ui.painter().rect_filled(row_rect, CornerRadius::ZERO, tc.list_selection_bg);
                     }
                     let dot_c = file_icon_color(&fm.file_name, dark);
                     let painter = ui.painter();
@@ -1206,7 +1192,7 @@ impl CodeEditorApp {
                     );
 
                     if row_resp.hovered() {
-                        ui.painter().rect_filled(row_rect, CornerRadius::ZERO, tc.selection_bg);
+                        ui.painter().rect_filled(row_rect, CornerRadius::ZERO, tc.list_selection_bg);
                     }
 
                     let painter = ui.painter();

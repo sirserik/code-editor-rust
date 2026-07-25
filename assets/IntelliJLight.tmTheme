@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+    IntelliJ Light — the JetBrains IntelliJ IDEA light colour scheme.
+
+    Colours follow the platform scheme so a file reads the same as in the IDE:
+      keyword #0033B3 · string #067D17 · number #1750EB · function #00627A
+      field #871094 · annotation #9E880D · comment #8C8C8C
+
+    The signature #FCFAED caret-row tint lives in the UI palette, not here.
+-->
+<dict>
+    <key>name</key>
+    <string>IntelliJ Light</string>
+    <key>settings</key>
+    <array>
+        <dict>
+            <key>settings</key>
+            <dict>
+                <key>background</key><string>#FFFFFF</string>
+                <key>foreground</key><string>#080808</string>
+                <key>caret</key><string>#000000</string>
+                <key>lineHighlight</key><string>#FCFAED</string>
+                <key>selection</key><string>#A6D2FF</string>
+                <key>invisibles</key><string>#D0D0D0</string>
+                <key>gutterForeground</key><string>#999999</string>
+            </dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Line comment</string>
+            <key>scope</key><string>comment.line, punctuation.definition.comment.line</string>
+            <key>settings</key>
+            <dict>
+                <key>foreground</key><string>#8C8C8C</string>
+                <key>fontStyle</key><string>italic</string>
+            </dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Block / documentation comment</string>
+            <!-- See the note in Darcula.tmTheme: `comment.line.documentation`
+                 has to be spelled out, `comment.documentation` won't match it. -->
+            <key>scope</key><string>comment.block, comment.documentation, comment.block.documentation, comment.line.documentation, string.quoted.docstring</string>
+            <key>settings</key>
+            <dict>
+                <key>foreground</key><string>#8C8C8C</string>
+                <key>fontStyle</key><string>italic</string>
+            </dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Doc comment tag (@param, @return)</string>
+            <key>scope</key><string>keyword.other.documentation, storage.type.class.doc, entity.name.tag.documentation, comment.block.documentation keyword</string>
+            <key>settings</key>
+            <dict>
+                <key>foreground</key><string>#9E880D</string>
+                <key>fontStyle</key><string>bold</string>
+            </dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>String</string>
+            <key>scope</key><string>string, string.quoted, string.unquoted, string.template</string>
+            <key>settings</key><dict><key>foreground</key><string>#067D17</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>String escape</string>
+            <key>scope</key><string>constant.character.escape, constant.other.placeholder</string>
+            <key>settings</key><dict><key>foreground</key><string>#0037A6</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Number</string>
+            <key>scope</key><string>constant.numeric</string>
+            <key>settings</key><dict><key>foreground</key><string>#1750EB</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Language constant (true, false, null)</string>
+            <key>scope</key><string>constant.language, constant.other, support.constant</string>
+            <key>settings</key><dict><key>foreground</key><string>#0033B3</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Keyword</string>
+            <key>scope</key><string>keyword, keyword.control, keyword.other, keyword.operator.expression, keyword.operator.new, keyword.operator.word</string>
+            <key>settings</key><dict><key>foreground</key><string>#0033B3</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Storage (fn, let, class, static, pub)</string>
+            <key>scope</key><string>storage, storage.type, storage.modifier, storage.type.function, storage.type.class</string>
+            <key>settings</key><dict><key>foreground</key><string>#0033B3</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Operator</string>
+            <key>scope</key><string>keyword.operator, punctuation.accessor</string>
+            <key>settings</key><dict><key>foreground</key><string>#080808</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Function name (calls + definitions)</string>
+            <key>scope</key><string>entity.name.function, support.function, variable.function, meta.function-call entity.name.function, meta.function-call.generic, meta.method-call, entity.name.function.macro</string>
+            <key>settings</key><dict><key>foreground</key><string>#00627A</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Instance / static field, property</string>
+            <key>scope</key><string>variable.other.member, variable.other.property, variable.other.object.property, meta.attribute-with-value entity.name, support.variable.property</string>
+            <key>settings</key><dict><key>foreground</key><string>#871094</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Variable / parameter</string>
+            <key>scope</key><string>variable, variable.other, variable.parameter, variable.other.readwrite</string>
+            <key>settings</key><dict><key>foreground</key><string>#080808</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Variable: language (this, self)</string>
+            <key>scope</key><string>variable.language</string>
+            <key>settings</key><dict><key>foreground</key><string>#0033B3</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Annotation / attribute / decorator</string>
+            <key>scope</key><string>meta.annotation, storage.type.annotation, punctuation.definition.annotation, meta.attribute, meta.decorator, entity.name.function.decorator, variable.annotation</string>
+            <key>settings</key><dict><key>foreground</key><string>#9E880D</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Punctuation</string>
+            <key>scope</key><string>punctuation, punctuation.terminator, punctuation.separator, punctuation.section</string>
+            <key>settings</key><dict><key>foreground</key><string>#080808</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>HTML/XML tag</string>
+            <key>scope</key><string>entity.name.tag, meta.tag, punctuation.definition.tag</string>
+            <key>settings</key><dict><key>foreground</key><string>#0033B3</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Tag attribute</string>
+            <key>scope</key><string>entity.other.attribute-name</string>
+            <key>settings</key><dict><key>foreground</key><string>#174AD4</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>CSS property</string>
+            <key>scope</key><string>support.type.property-name, meta.property-name</string>
+            <key>settings</key><dict><key>foreground</key><string>#871094</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>JSON / YAML key</string>
+            <key>scope</key><string>support.type.property-name.json, support.type.property-name.yaml, entity.name.tag.yaml, string.json punctuation.definition.string.json</string>
+            <key>settings</key><dict><key>foreground</key><string>#871094</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Markup heading</string>
+            <key>scope</key><string>markup.heading, entity.name.section</string>
+            <key>settings</key>
+            <dict>
+                <key>foreground</key><string>#0033B3</string>
+                <key>fontStyle</key><string>bold</string>
+            </dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Markup bold</string>
+            <key>scope</key><string>markup.bold</string>
+            <key>settings</key><dict><key>fontStyle</key><string>bold</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Markup italic</string>
+            <key>scope</key><string>markup.italic</string>
+            <key>settings</key><dict><key>fontStyle</key><string>italic</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Markup link</string>
+            <key>scope</key><string>markup.underline.link</string>
+            <key>settings</key>
+            <dict>
+                <key>foreground</key><string>#1750EB</string>
+                <key>fontStyle</key><string>underline</string>
+            </dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Diff added</string>
+            <key>scope</key><string>markup.inserted</string>
+            <key>settings</key><dict><key>foreground</key><string>#067D17</string></dict>
+        </dict>
+        <dict>
+            <key>name</key><string>Diff removed</string>
+            <key>scope</key><string>markup.deleted</string>
+            <key>settings</key><dict><key>foreground</key><string>#DB3B4B</string></dict>
+        </dict>
+        <dict>
+            <key>name</key><string>Diff changed</string>
+            <key>scope</key><string>markup.changed</string>
+            <key>settings</key><dict><key>foreground</key><string>#1750EB</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Invalid</string>
+            <key>scope</key><string>invalid, invalid.illegal</string>
+            <key>settings</key><dict><key>foreground</key><string>#DB3B4B</string></dict>
+        </dict>
+    </array>
+</dict>
+</plist>

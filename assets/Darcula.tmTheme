@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+    Darcula — the JetBrains IntelliJ IDEA dark colour scheme.
+
+    Colours are taken from the platform scheme (Darcula.xml) so a file looks the
+    same here as in the IDE:
+      keyword #CC7832 · string #6A8759 · number #6897BB · function #FFC66D
+      field #9876AA · annotation #BBB529 · comment #808080 · doc-comment #629755
+
+    Class and type names deliberately stay at the default foreground (#A9B7C6) —
+    that is authentic Darcula; JetBrains does not tint them.
+-->
+<dict>
+    <key>name</key>
+    <string>Darcula</string>
+    <key>settings</key>
+    <array>
+        <dict>
+            <key>settings</key>
+            <dict>
+                <key>background</key><string>#2B2B2B</string>
+                <key>foreground</key><string>#A9B7C6</string>
+                <key>caret</key><string>#BBBBBB</string>
+                <key>lineHighlight</key><string>#323232</string>
+                <key>selection</key><string>#214283</string>
+                <key>invisibles</key><string>#4E5254</string>
+                <key>gutterForeground</key><string>#606366</string>
+            </dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Line comment</string>
+            <key>scope</key><string>comment.line, punctuation.definition.comment.line</string>
+            <key>settings</key><dict><key>foreground</key><string>#808080</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Block / documentation comment</string>
+            <!-- `comment.line.documentation` (Rust `///`, `//!`) must be listed
+                 explicitly: a `comment.documentation` selector does NOT match it,
+                 because tmTheme matches scope atoms positionally and the second
+                 atom there is `line`. Without this, doc comments fell through to
+                 the grey line-comment rule instead of JetBrains' doc green. -->
+            <key>scope</key><string>comment.block, comment.documentation, comment.block.documentation, comment.line.documentation, string.quoted.docstring</string>
+            <key>settings</key><dict><key>foreground</key><string>#629755</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Doc comment tag (@param, @return)</string>
+            <key>scope</key><string>keyword.other.documentation, storage.type.class.doc, entity.name.tag.documentation, comment.block.documentation keyword</string>
+            <key>settings</key>
+            <dict>
+                <key>foreground</key><string>#BBB529</string>
+                <key>fontStyle</key><string>bold</string>
+            </dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>String</string>
+            <key>scope</key><string>string, string.quoted, string.unquoted, string.template</string>
+            <key>settings</key><dict><key>foreground</key><string>#6A8759</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>String escape</string>
+            <key>scope</key><string>constant.character.escape, constant.other.placeholder</string>
+            <key>settings</key><dict><key>foreground</key><string>#CC7832</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Number</string>
+            <key>scope</key><string>constant.numeric</string>
+            <key>settings</key><dict><key>foreground</key><string>#6897BB</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Language constant (true, false, null)</string>
+            <key>scope</key><string>constant.language, constant.other, support.constant</string>
+            <key>settings</key><dict><key>foreground</key><string>#CC7832</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Keyword</string>
+            <key>scope</key><string>keyword, keyword.control, keyword.other, keyword.operator.expression, keyword.operator.new, keyword.operator.word</string>
+            <key>settings</key><dict><key>foreground</key><string>#CC7832</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Storage (fn, let, class, static, pub)</string>
+            <key>scope</key><string>storage, storage.type, storage.modifier, storage.type.function, storage.type.class</string>
+            <key>settings</key><dict><key>foreground</key><string>#CC7832</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Operator</string>
+            <key>scope</key><string>keyword.operator, punctuation.accessor</string>
+            <key>settings</key><dict><key>foreground</key><string>#A9B7C6</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Function name (calls + definitions)</string>
+            <key>scope</key><string>entity.name.function, support.function, variable.function, meta.function-call entity.name.function, meta.function-call.generic, meta.method-call, entity.name.function.macro</string>
+            <key>settings</key><dict><key>foreground</key><string>#FFC66D</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Instance / static field, property</string>
+            <key>scope</key><string>variable.other.member, variable.other.property, variable.other.object.property, meta.attribute-with-value entity.name, support.variable.property</string>
+            <key>settings</key><dict><key>foreground</key><string>#9876AA</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Variable / parameter</string>
+            <key>scope</key><string>variable, variable.other, variable.parameter, variable.other.readwrite</string>
+            <key>settings</key><dict><key>foreground</key><string>#A9B7C6</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Variable: language (this, self)</string>
+            <key>scope</key><string>variable.language</string>
+            <key>settings</key><dict><key>foreground</key><string>#CC7832</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Annotation / attribute / decorator</string>
+            <key>scope</key><string>meta.annotation, storage.type.annotation, punctuation.definition.annotation, meta.attribute, meta.decorator, entity.name.function.decorator, variable.annotation</string>
+            <key>settings</key><dict><key>foreground</key><string>#BBB529</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Punctuation</string>
+            <key>scope</key><string>punctuation, punctuation.terminator, punctuation.separator, punctuation.section</string>
+            <key>settings</key><dict><key>foreground</key><string>#A9B7C6</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>HTML/XML tag</string>
+            <key>scope</key><string>entity.name.tag, meta.tag, punctuation.definition.tag</string>
+            <key>settings</key><dict><key>foreground</key><string>#E8BF6A</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Tag attribute</string>
+            <key>scope</key><string>entity.other.attribute-name</string>
+            <key>settings</key><dict><key>foreground</key><string>#BABABA</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>CSS property</string>
+            <key>scope</key><string>support.type.property-name, meta.property-name</string>
+            <key>settings</key><dict><key>foreground</key><string>#9876AA</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>JSON / YAML key</string>
+            <key>scope</key><string>support.type.property-name.json, support.type.property-name.yaml, entity.name.tag.yaml, string.json punctuation.definition.string.json</string>
+            <key>settings</key><dict><key>foreground</key><string>#9876AA</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Markup heading</string>
+            <key>scope</key><string>markup.heading, entity.name.section</string>
+            <key>settings</key>
+            <dict>
+                <key>foreground</key><string>#CC7832</string>
+                <key>fontStyle</key><string>bold</string>
+            </dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Markup bold</string>
+            <key>scope</key><string>markup.bold</string>
+            <key>settings</key><dict><key>fontStyle</key><string>bold</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Markup italic</string>
+            <key>scope</key><string>markup.italic</string>
+            <key>settings</key><dict><key>fontStyle</key><string>italic</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Markup link</string>
+            <key>scope</key><string>markup.underline.link</string>
+            <key>settings</key>
+            <dict>
+                <key>foreground</key><string>#287BDE</string>
+                <key>fontStyle</key><string>underline</string>
+            </dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Diff added</string>
+            <key>scope</key><string>markup.inserted</string>
+            <key>settings</key><dict><key>foreground</key><string>#6A8759</string></dict>
+        </dict>
+        <dict>
+            <key>name</key><string>Diff removed</string>
+            <key>scope</key><string>markup.deleted</string>
+            <key>settings</key><dict><key>foreground</key><string>#CC7832</string></dict>
+        </dict>
+        <dict>
+            <key>name</key><string>Diff changed</string>
+            <key>scope</key><string>markup.changed</string>
+            <key>settings</key><dict><key>foreground</key><string>#6897BB</string></dict>
+        </dict>
+
+        <dict>
+            <key>name</key><string>Invalid</string>
+            <key>scope</key><string>invalid, invalid.illegal</string>
+            <key>settings</key><dict><key>foreground</key><string>#FF6B68</string></dict>
+        </dict>
+    </array>
+</dict>
+</plist>
