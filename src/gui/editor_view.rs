@@ -116,8 +116,15 @@ fn point_to_line_col(
 const BRACKET_SCAN_LINES: usize = 5_000;
 
 /// Quiet period after the last keystroke before the whole-buffer analysis pass
-/// (syntect + folds + diagnostics) is kicked off.
+/// (syntect + folds + diagnostics) is kicked off — applied only to buffers whose
+/// last pass was slow enough to be worth coalescing (see `ANALYSIS_CHEAP_MS`).
 const ANALYSIS_DEBOUNCE_MS: u128 = 120;
+
+/// An analysis pass at or under this cost re-runs immediately on every edit.
+/// Anything cheaper than a frame is not worth delaying: debouncing it only
+/// leaves freshly typed text in the default colour until the timer expires,
+/// which reads as the editor lagging a quarter second behind the keyboard.
+const ANALYSIS_CHEAP_MS: f32 = 10.0;
 
 /// Find matching bracket position for bracket at (line, col)
 fn find_matching_bracket(app: &crate::app::App, line: usize, col: usize) -> Option<(usize, usize)> {
@@ -337,6 +344,20 @@ impl CodeEditorApp {
                 // every in-flight result would be discarded as stale forever.
                 if stale && ed.highlight_applied_gen == ed.highlight_gen {
                     ed.highlight_gen += 1; // a newer analysis is wanted
+                    // Checkpoints are keyed by line number and carry baked-in
+                    // theme colours, so they only survive an edit that leaves the
+                    // line count and the scheme alone. Dropping them makes the
+                    // next pass a full one.
+                    let can_resume = !first_load
+                        && !theme_changed
+                        && ed.highlight_cache.len() == lc
+                        && !ed.highlight_checkpoints.is_empty();
+                    ed.highlight_request_from = if can_resume {
+                        ed.highlight_dirty_from.unwrap_or(0)
+                    } else {
+                        ed.highlight_checkpoints.clear();
+                        0
+                    };
                     ed.highlight_cache_theme = Some(syntax_theme);
                     // Consume the dirty markers only now that we're acting on them, so
                     // edits during an in-flight pass aren't lost — they keep the
@@ -348,11 +369,22 @@ impl CodeEditorApp {
                 // Install a finished worker result (newest gen only; drop stale).
                 if let Some(rx) = &ed.highlight_rx {
                     if let Ok(res) = rx.try_recv() {
+                        ed.last_analysis_ms = res.duration_ms;
                         if res.generation == ed.highlight_gen {
-                            ed.highlight_cache = res.highlights;
+                            // Splice the recomputed slice over the cache: the pass
+                            // covers `start_line .. converged_at`, and everything
+                            // below the convergence point is provably unchanged.
+                            let cache_len = ed.highlight_cache.len();
+                            let end = res.converged_at.unwrap_or(cache_len).min(cache_len);
+                            if res.start_line <= end {
+                                ed.highlight_cache.splice(res.start_line..end, res.highlights);
+                            } else {
+                                ed.highlight_cache = res.highlights;
+                            }
                             if ed.highlight_cache.len() != lc {
                                 ed.highlight_cache.resize(lc, Vec::new());
                             }
+                            ed.highlight_checkpoints = res.checkpoints;
                             ed.fold_ranges = res.folds;
                             ed.fold_ranges_computed = true;
                             ed.diagnostics = res.diagnostics;
@@ -362,32 +394,51 @@ impl CodeEditorApp {
                     }
                 }
 
-                // No worker running and the shown state is out of date → spawn one,
-                // but only once typing has paused for a moment. Each pass copies the
-                // whole buffer out of the rope, so spawning per keystroke turned
-                // every character into an O(file) memcpy plus a thread launch.
+                // No worker running and the shown state is out of date → spawn one.
+                // Each pass copies the whole buffer out of the rope, so on a large
+                // file, spawning per keystroke turns every character into an
+                // O(file) memcpy plus a thread launch — those wait for a pause in
+                // typing. A pass that costs less than a frame runs immediately, so
+                // colours keep up with the keyboard.
                 let pending = ed.highlight_applied_gen != ed.highlight_gen;
+                let cheap = ed.last_analysis_ms <= ANALYSIS_CHEAP_MS;
                 let ready = first_load
                     || ed.highlight_cache.is_empty()
+                    || cheap
                     || idle_ms >= ANALYSIS_DEBOUNCE_MS;
                 if ed.highlight_rx.is_none() && pending && ready {
                     let content = ed.buffer.text();
                     let lang = ed.highlight_cache_lang.clone();
                     let generation = ed.highlight_gen;
+                    let from_line = ed.highlight_request_from;
+                    let checkpoints = ed.highlight_checkpoints.clone();
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || {
-                        let highlights = crate::syntect_engine::highlight_buffer(&content, &lang, syntax_theme)
-                            .unwrap_or_else(|| {
+                        let started = std::time::Instant::now();
+                        // Resumes from the checkpoint above the edit and stops as
+                        // soon as the parser state matches what it was — an empty
+                        // checkpoint list makes this a full pass from line 0.
+                        let inc = crate::syntect_engine::highlight_incremental(
+                            &content, &lang, syntax_theme, &checkpoints, from_line,
+                        );
+                        let (start_line, converged_at, highlights, checkpoints) = match inc {
+                            Some(r) => (r.start_line, r.converged_at, r.lines, r.checkpoints),
+                            None => {
                                 // Fallback: per-line keyword highlighter for languages
                                 // syntect doesn't bundle (or when its parser bails out).
-                                content.lines()
+                                // It is stateless, so it always covers the whole file.
+                                let lines = content.lines()
                                     .map(|line| crate::syntax::highlight_line(line, &lang))
-                                    .collect()
-                            });
+                                    .collect();
+                                (0, None, lines, Vec::new())
+                            }
+                        };
                         let folds = crate::editor::compute_folds(&content);
                         let diagnostics = crate::syntax::check_syntax(&content, &lang);
                         let _ = tx.send(crate::editor::AnalysisResult {
-                            generation, highlights, folds, diagnostics,
+                            generation, start_line, converged_at, highlights, checkpoints,
+                            folds, diagnostics,
+                            duration_ms: started.elapsed().as_secs_f32() * 1000.0,
                         });
                     });
                     ed.highlight_rx = Some(rx);
@@ -399,9 +450,11 @@ impl CodeEditorApp {
                 if ed.highlight_rx.is_some() {
                     ctx.request_repaint();
                 } else if pending {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(
-                        ANALYSIS_DEBOUNCE_MS as u64,
-                    ));
+                    // Wake when the debounce actually expires, not a full period
+                    // later — asking for the whole window again on every frame
+                    // could double the wait before the pass even started.
+                    let remaining = ANALYSIS_DEBOUNCE_MS.saturating_sub(idle_ms).max(1);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(remaining as u64));
                 }
             }
 

@@ -70,14 +70,35 @@ pub struct Editor {
     pub highlight_rx: Option<std::sync::mpsc::Receiver<AnalysisResult>>,
     pub highlight_gen: u64,
     pub highlight_applied_gen: u64,
+    /// How long the last analysis pass took. Small files re-analyse in a couple
+    /// of milliseconds, so making *them* wait for a typing pause just leaves the
+    /// text sitting in the default colour for a quarter of a second.
+    pub last_analysis_ms: f32,
+    /// Parser snapshots that let an edit resume near the change instead of
+    /// re-parsing from line 0. Empty = the next pass is a full one; they are
+    /// cleared whenever the line count or the colour scheme changes, since the
+    /// snapshots are keyed by line number.
+    pub highlight_checkpoints: Vec<crate::syntect_engine::Checkpoint>,
+    /// Line the next analysis pass should resume from.
+    pub highlight_request_from: usize,
 }
 
 /// One completed background analysis pass of a buffer.
 pub struct AnalysisResult {
     pub generation: u64,
+    /// First line the pass recomputed.
+    pub start_line: usize,
+    /// Line at which the parser state matched its previous value, so the cached
+    /// spans from here down are still valid. `None` = recomputed to the end.
+    pub converged_at: Option<usize>,
+    /// Spans for `start_line .. converged_at`, spliced into the existing cache.
     pub highlights: Vec<Vec<crate::syntax::HighlightSpan>>,
+    pub checkpoints: Vec<crate::syntect_engine::Checkpoint>,
     pub folds: HashMap<usize, usize>,
     pub diagnostics: Vec<SyntaxError>,
+    /// Wall time the pass took, used to decide whether the next one is cheap
+    /// enough to run immediately or needs to wait for a pause in typing.
+    pub duration_ms: f32,
 }
 
 /// Compute brace/bracket fold ranges from raw text. Pure (no `&self`) so it can
@@ -148,6 +169,9 @@ impl Editor {
             highlight_rx: None,
             highlight_gen: 0,
             highlight_applied_gen: 0,
+            last_analysis_ms: 0.0,
+            highlight_checkpoints: Vec::new(),
+            highlight_request_from: 0,
         }
     }
 
@@ -185,6 +209,9 @@ impl Editor {
             highlight_rx: None,
             highlight_gen: 0,
             highlight_applied_gen: 0,
+            last_analysis_ms: 0.0,
+            highlight_checkpoints: Vec::new(),
+            highlight_request_from: 0,
         })
     }
 

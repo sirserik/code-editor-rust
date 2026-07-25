@@ -11,9 +11,10 @@
 
 use std::io::Cursor;
 use std::sync::OnceLock;
+#[cfg(test)]
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme as SynTheme, ThemeSet};
-use syntect::parsing::SyntaxSet;
+use syntect::highlighting::{HighlightIterator, HighlightState, Highlighter, Theme as SynTheme, ThemeSet};
+use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 use syntect::util::LinesWithEndings;
 use egui::Color32;
 
@@ -143,9 +144,10 @@ fn theme_for(syntax_theme: SyntaxTheme) -> Option<&'static SynTheme> {
     }
 }
 
-/// Highlight the whole buffer for `lang` (our internal id). On success returns one
-/// `Vec<HighlightSpan>` per line. Returns `None` when syntect can't handle the language
-/// or the syntax set/theme is missing — the editor falls back to the keyword highlighter.
+/// Highlight the whole buffer in one pass. Superseded in the editor by
+/// `highlight_incremental`, but kept as the straightforward reference the
+/// incremental path is checked against.
+#[cfg(test)]
 pub fn highlight_buffer(content: &str, lang: &str, syntax_theme: SyntaxTheme) -> Option<Vec<Vec<HighlightSpan>>> {
     let ext = lang_to_ext(lang)?;
     let ss = syntax_set();
@@ -185,6 +187,138 @@ pub fn highlight_buffer(content: &str, lang: &str, syntax_theme: SyntaxTheme) ->
         let _ = buffered_line.take();
     }
     Some(out)
+}
+
+// ── Incremental re-highlighting ──────────────────────────────────────────────
+//
+// Syntect is stateful across lines, so the obvious implementation re-parses the
+// whole buffer after every edit. With the pure-Rust `fancy-regex` backend that
+// costs ~0.15 ms per line — 150 ms for a 1000-line file, on *every keystroke*,
+// which is long enough to see freshly typed text sit in the default colour.
+//
+// So we snapshot syntect's state every `CHECKPOINT_EVERY` lines. An edit
+// restarts from the checkpoint just above it, and stops as soon as the state
+// matches the snapshot it had before — past that point nothing can have
+// changed, and the previously computed spans are still valid. Editing anywhere
+// in a normal file then costs a couple of checkpoints' worth of lines instead
+// of the whole buffer.
+
+/// Lines between saved parser snapshots. Smaller = faster re-parse after an
+/// edit, but more cloned state per pass.
+const CHECKPOINT_EVERY: usize = 64;
+
+/// Syntect's state at the *start* of a line.
+#[derive(Clone, Debug)]
+pub struct Checkpoint {
+    pub line: usize,
+    parse: ParseState,
+    highlight: HighlightState,
+}
+
+/// Outcome of an incremental pass. `lines` covers `start_line ..
+/// converged_at.unwrap_or(end of file)`; the caller splices it into the cache it
+/// already has.
+pub struct IncrementalHighlight {
+    pub start_line: usize,
+    /// Line at which the new state matched the old one, so everything from here
+    /// down is unchanged. `None` means the pass ran to the end of the buffer.
+    pub converged_at: Option<usize>,
+    pub lines: Vec<Vec<HighlightSpan>>,
+    pub checkpoints: Vec<Checkpoint>,
+}
+
+/// Re-highlight `content` from `from_line` down, reusing `prev` when possible.
+///
+/// `prev` must have been produced for a buffer with the *same line count* —
+/// checkpoints are keyed by line number, so an insertion or deletion shifts
+/// them and the caller must fall back to a full pass. Pass an empty slice to
+/// force a full re-parse.
+pub fn highlight_incremental(
+    content: &str,
+    lang: &str,
+    syntax_theme: SyntaxTheme,
+    prev: &[Checkpoint],
+    from_line: usize,
+) -> Option<IncrementalHighlight> {
+    let ext = lang_to_ext(lang)?;
+    let ss = syntax_set();
+    let syntax = ss.find_syntax_by_extension(ext)?;
+    let theme = theme_for(syntax_theme)?;
+    let highlighter = Highlighter::new(theme);
+
+    // Resume from the last checkpoint at or before the edit.
+    let resume = prev.iter().rev().find(|c| c.line <= from_line);
+    let (start_line, mut parse, mut hl) = match resume {
+        Some(c) => (c.line, c.parse.clone(), c.highlight.clone()),
+        None => (
+            0,
+            ParseState::new(syntax),
+            HighlightState::new(&highlighter, ScopeStack::new()),
+        ),
+    };
+
+    let mut lines: Vec<Vec<HighlightSpan>> = Vec::new();
+    let mut checkpoints: Vec<Checkpoint> = prev.iter().filter(|c| c.line < start_line).cloned().collect();
+
+    for (i, raw_line) in LinesWithEndings::from(content).enumerate() {
+        if i < start_line {
+            continue;
+        }
+        if i % CHECKPOINT_EVERY == 0 {
+            // Past the edit, has the state caught up with what it was before?
+            // If so the rest of the file is untouched.
+            if i > from_line {
+                if let Some(old) = prev.iter().find(|c| c.line == i) {
+                    if old.parse == parse && old.highlight == hl {
+                        checkpoints.extend(prev.iter().filter(|c| c.line >= i).cloned());
+                        return Some(IncrementalHighlight {
+                            start_line,
+                            converged_at: Some(i),
+                            lines,
+                            checkpoints,
+                        });
+                    }
+                }
+            }
+            checkpoints.push(Checkpoint { line: i, parse: parse.clone(), highlight: hl.clone() });
+        }
+
+        let ops = parse.parse_line(raw_line, ss).ok()?;
+        let regions = HighlightIterator::new(&mut hl, &ops, raw_line, &highlighter);
+        lines.push(spans_for_line(raw_line, regions));
+    }
+
+    Some(IncrementalHighlight { start_line, converged_at: None, lines, checkpoints })
+}
+
+/// Turn one line's styled regions into our span representation, dropping the
+/// trailing newline so ranges match how the editor measures line content.
+fn spans_for_line<'a>(
+    raw_line: &str,
+    regions: impl Iterator<Item = (syntect::highlighting::Style, &'a str)>,
+) -> Vec<HighlightSpan> {
+    let trim = if raw_line.ends_with('\n') { 1 } else { 0 };
+    let line_len = raw_line.len().saturating_sub(trim);
+    let mut byte_col = 0;
+    let mut spans = Vec::new();
+    for (style, text) in regions {
+        let span_len = text.len();
+        let end = (byte_col + span_len).min(line_len);
+        if byte_col < end {
+            let c = style.foreground;
+            spans.push(HighlightSpan {
+                start: byte_col,
+                end,
+                kind: HighlightKind::Normal,
+                override_color: Some(Color32::from_rgb(c.r, c.g, c.b)),
+            });
+        }
+        byte_col += span_len;
+        if byte_col >= line_len {
+            break;
+        }
+    }
+    spans
 }
 
 #[cfg(test)]
@@ -295,6 +429,106 @@ mod tests {
         assert_eq!(hex_at("// note", "rust", L, 3), "#8C8C8C", "line comment");
     }
 
+    // ── Incremental re-highlighting ──
+
+    /// Run an incremental pass and splice it into `base` the way the editor does.
+    fn apply(
+        base: &mut Vec<Vec<HighlightSpan>>,
+        checkpoints: &mut Vec<Checkpoint>,
+        content: &str,
+        from_line: usize,
+    ) {
+        let inc = highlight_incremental(content, "rust", SyntaxTheme::Darcula, checkpoints, from_line)
+            .expect("incremental pass");
+        let end = inc.converged_at.unwrap_or(base.len());
+        base.splice(inc.start_line..end, inc.lines);
+        *checkpoints = inc.checkpoints;
+    }
+
+    fn colors(spans: &[Vec<HighlightSpan>]) -> Vec<Vec<(usize, usize, Option<Color32>)>> {
+        spans
+            .iter()
+            .map(|l| l.iter().map(|s| (s.start, s.end, s.override_color)).collect())
+            .collect()
+    }
+
+    fn full(content: &str) -> Vec<Vec<HighlightSpan>> {
+        highlight_incremental(content, "rust", SyntaxTheme::Darcula, &[], 0)
+            .unwrap()
+            .lines
+    }
+
+    #[test]
+    fn incremental_matches_a_full_pass() {
+        // A buffer long enough to span several checkpoints, with a multi-line
+        // string so the parser really does carry state across lines.
+        let mut src = String::new();
+        for i in 0..400 {
+            src.push_str(&format!("fn f{}() {{ let s = \"text {}\"; }}\n", i, i));
+        }
+        let mut cache = full(&src);
+        let mut cps = highlight_incremental(&src, "rust", SyntaxTheme::Darcula, &[], 0)
+            .unwrap()
+            .checkpoints;
+
+        // Edit a line in the middle, keeping the line count identical.
+        let edited = src.replace("fn f200() {", "fn g200() {");
+        apply(&mut cache, &mut cps, &edited, 200);
+
+        assert_eq!(colors(&cache), colors(&full(&edited)), "incremental drifted from a full pass");
+    }
+
+    #[test]
+    fn incremental_handles_an_edit_that_opens_a_block_comment() {
+        // The state change has to propagate: everything below turns into a
+        // comment, so convergence must NOT fire early.
+        let mut src = String::new();
+        for i in 0..300 {
+            src.push_str(&format!("let v{} = {};\n", i, i));
+        }
+        let mut cache = full(&src);
+        let mut cps = highlight_incremental(&src, "rust", SyntaxTheme::Darcula, &[], 0)
+            .unwrap()
+            .checkpoints;
+
+        let edited = src.replace("let v100 = 100;", "let v100 = 100; /* open");
+        apply(&mut cache, &mut cps, &edited, 100);
+        assert_eq!(colors(&cache), colors(&full(&edited)), "block comment did not propagate");
+
+        // …and closing it again must restore the original colouring.
+        let closed = edited.replace("let v100 = 100; /* open", "let v100 = 100;");
+        apply(&mut cache, &mut cps, &closed, 100);
+        assert_eq!(colors(&cache), colors(&full(&closed)));
+    }
+
+    #[test]
+    fn incremental_converges_instead_of_reparsing_everything() {
+        let mut src = String::new();
+        for i in 0..1_000 {
+            src.push_str(&format!("let v{} = {};\n", i, i));
+        }
+        let cps = highlight_incremental(&src, "rust", SyntaxTheme::Darcula, &[], 0)
+            .unwrap()
+            .checkpoints;
+        let edited = src.replace("let v500 = 500;", "let v500 = 501;");
+        let inc = highlight_incremental(&edited, "rust", SyntaxTheme::Darcula, &cps, 500).unwrap();
+
+        assert!(inc.converged_at.is_some(), "expected an early exit");
+        assert!(
+            inc.lines.len() <= 2 * CHECKPOINT_EVERY,
+            "re-parsed {} lines for a one-character edit",
+            inc.lines.len()
+        );
+    }
+
+    #[test]
+    fn incremental_from_scratch_equals_the_old_full_path() {
+        let src = "fn main() {\n    let s = \"hi\";\n    // note\n}\n";
+        let old = highlight_buffer(src, "rust", SyntaxTheme::Darcula).unwrap();
+        let new = full(src);
+        assert_eq!(colors(&old), colors(&new));
+    }
+
     #[test]
     fn each_ui_theme_maps_to_a_loadable_scheme() {
         for t in crate::settings::Theme::ALL {
@@ -302,4 +536,5 @@ mod tests {
         }
     }
 }
+
 
